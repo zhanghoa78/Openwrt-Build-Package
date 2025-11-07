@@ -1,18 +1,18 @@
-name: 🛠️ Build Package (Manual Only)
+name: 🛠️ 手动编译插件（仅限手动触发）
 
 on:
   workflow_dispatch:
     inputs:
       target:
-        description: 'Target platform (e.g., ramips/mt7621, x86/64, mediatek/mt7981)'
+        description: '目标平台（例如：ramips/mt7621、x86/64、mediatek/mt7981）'
         required: true
         default: 'ramips/mt7621'
       version:
-        description: 'Firmware version (e.g., 23.05.3, 24.10, SNAPSHOT)'
+        description: '固件版本（例如：23.05.3、24.10、SNAPSHOT）'
         required: true
         default: '23.05.3'
       distro:
-        description: 'Distribution'
+        description: '固件发行版'
         required: true
         default: 'immortalwrt'
         type: choice
@@ -22,36 +22,39 @@ on:
 
 jobs:
   build:
+    name: 编译插件
     runs-on: ubuntu-22.04
 
     steps:
-      - name: ⏬ Checkout Plugin Code
+      - name: ⏬ 检出插件代码
         uses: actions/checkout@v4
         with:
           path: plugin
 
-      - name: 🔍 Detect Package Name
+      - name: 🔍 自动检测插件名称
         id: detect
         run: |
-          # 自动查找包含 Makefile 的插件目录（排除 .git 等隐藏目录）
+          # 查找包含 Makefile 的插件目录（跳过隐藏文件夹）
           PKG_DIR=$(find plugin -maxdepth 2 -type d -not -path "*/.*" -exec test -f "{}/Makefile" \; -print | head -n1)
           if [ -z "$PKG_DIR" ]; then
-            echo "❌ No directory with Makefile found!" >&2
+            echo "❌ 错误：未找到包含 Makefile 的插件目录！" >&2
             exit 1
           fi
           PKG_NAME=$(basename "$PKG_DIR")
           echo "PACKAGE_NAME=$PKG_NAME" >> $GITHUB_ENV
-          echo "✅ Detected package: $PKG_NAME"
+          echo "✅ 已检测到插件名称：$PKG_NAME"
 
-      - name: 🌐 Set Base URL
+      - name: 🌐 设置固件下载源
         run: |
           if [[ "${{ github.event.inputs.distro }}" == "immortalwrt" ]]; then
             echo "BASE_URL=https://downloads.immortalwrt.org/releases" >> $GITHUB_ENV
+            echo "📦 使用发行版：ImmortalWrt"
           else
             echo "BASE_URL=https://downloads.openwrt.org/releases" >> $GITHUB_ENV
+            echo "📦 使用发行版：OpenWrt"
           fi
 
-      - name: 📥 Download SDK
+      - name: 📥 下载 SDK
         env:
           TARGET: ${{ github.event.inputs.target }}
           VERSION: ${{ github.event.inputs.version }}
@@ -61,36 +64,42 @@ jobs:
           FILENAME="${DISTRO}-sdk-${VERSION}-${ARCH}_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
           URL="${BASE_URL}/${VERSION}/targets/${TARGET}/${FILENAME}"
 
-          echo "📥 Downloading SDK from: $URL"
-          wget --quiet "$URL" -O sdk.tar.xz || { echo "❌ SDK not found!"; exit 1; }
+          echo "📥 正在下载 SDK：$URL"
+          wget --quiet "$URL" -O sdk.tar.xz || { echo "❌ 错误：SDK 未找到，请检查 target 和 version 是否正确！"; exit 1; }
           tar -xf sdk.tar.xz
           mv ${DISTRO}-sdk-* sdk
 
           mkdir -p sdk/package/custom
           cp -r plugin/${{ env.PACKAGE_NAME }} sdk/package/custom/
+          echo "✅ 插件已复制到 SDK 目录"
 
-      - name: 🔧 Install Build Dependencies
+      - name: 🔧 安装系统依赖
         run: |
+          echo "🔧 正在安装编译依赖..."
           sudo apt update -qq
           sudo apt install -y -qq build-essential ccache ecj fastjar file g++ gawk \
             gettext git libelf-dev libncurses5-dev libssl-dev python3 python3-dev \
             python3-pip python3-setuptools python3-wheel unzip wget xz-utils zlib1g-dev
 
-      - name: 🔄 Update Feeds
+      - name: 🔄 更新软件包源（feeds）
         working-directory: ./sdk
         run: |
+          echo "🔄 正在更新 feeds..."
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 🛠️ Compile Package
+      - name: 🛠️ 编译插件
         working-directory: ./sdk
         run: |
+          echo "🛠️ 正在编译插件：${{ env.PACKAGE_NAME }}"
           make package/custom/${{ env.PACKAGE_NAME }}/compile V=s
 
-      - name: 📤 Upload .ipk Files
+      - name: 📤 上传 .ipk 文件
         uses: actions/upload-artifact@v4
         with:
           name: ipk-${{ github.event.inputs.target }}-${{ github.event.inputs.version }}
           path: |
             sdk/bin/packages/**/**/*.ipk
           if-no-files-found: error
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
