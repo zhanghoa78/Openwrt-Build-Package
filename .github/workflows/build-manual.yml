@@ -1,54 +1,57 @@
-#
-# Copyright (C) 2025 Your Name <your.email@example.com>
-#
-# This is free software, licensed under the GNU General Public License v3.
-#
+name: Build Luci App Manually
 
-include $(TOPDIR)/rules.mk
+on:
+  workflow_dispatch:
 
-PKG_NAME:=luci-app-tcpdump-js
-PKG_VERSION:=1.0
-PKG_RELEASE:=1
+env:
+  PACKAGE_NAME: luci-app-tcpdump-js
 
-PKG_BUILD_DIR := $(BUILD_DIR)/$(PKG_NAME)
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
 
-# 使用标准 package.mk，不依赖 luci.mk（兼容所有 SDK）
-include $(INCLUDE_DIR)/package.mk
+      - name: 🛠️ Set up build environment
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential ccache ecj fastjar file g++ gawk \
+            gettext git java-propose-classpath libelf-dev libncurses5-dev \
+            libssl-dev python3-distutils rsync subversion unzip wget \
+            python3 python3-pip
 
-define Package/$(PKG_NAME)
-	SECTION:=luci
-	CATEGORY:=LuCI
-	SUBMENU:=Utilities
-	TITLE:=TCPDump Web Interface (JavaScript Version)
-	DEPENDS:=+luci-base +tcpdump
-	PKGARCH:=all
-endef
+      - name: 📦 Clone OpenWrt SDK
+        run: |
+          git clone https://github.com/openwrt/sdk.git --branch openwrt-23.05 --single-branch sdk
+          # 如果是 ImmortalWrt，请替换为：
+          # git clone https://github.com/immortalwrt/sdk.git --branch openwrt-23.05 --single-branch sdk
 
-define Package/$(PKG_NAME)/description
-	A modern web-based interface for tcpdump using LuCI's JavaScript framework.
-	Captures packets to /tmp/tcpdump.pcap. Download via SCP or add a download link later.
-endef
+      - name: 🔗 Link custom package
+        run: |
+          mkdir -p sdk/package/custom
+          ln -s $GITHUB_WORKSPACE sdk/package/custom/${{ env.PACKAGE_NAME }}
 
-define Build/Prepare
-	# 复制 Lua 后端代码
-	$(CP) ./luasrc $(PKG_BUILD_DIR)/
+      - name: 🧪 Update and install feeds
+        working-directory: ./sdk
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-	# 只复制 htdocs/luci-static 内容（关键！）
-	$(CP) ./htdocs/luci-static $(PKG_BUILD_DIR)/
-endef
+      - name: 🛠️ Compile package
+        working-directory: ./sdk
+        run: |
+          make defconfig
+          make package/custom/${{ env.PACKAGE_NAME }}/compile V=s 2>&1 | tee build.log
+          EXIT_CODE=${PIPESTATUS[0]}
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ 编译失败！打印最后 50 行日志："
+            tail -n 50 build.log
+            exit $EXIT_CODE
+          fi
 
-define Build/Compile
-	# No compilation needed for pure Lua/JS package
-endef
-
-define Package/$(PKG_NAME)/install
-	# 安装 Lua RPC 接口到标准位置
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/
-	$(CP) $(PKG_BUILD_DIR)/luasrc/* $(1)/usr/lib/lua/luci/
-
-	# 安装前端资源到 /www/luci-static/ （LuCI 标准路径）
-	$(INSTALL_DIR) $(1)/www/luci-static/
-	$(CP) $(PKG_BUILD_DIR)/luci-static/* $(1)/www/luci-static/
-endef
-
-$(eval $(call BuildPackage,$(PKG_NAME)))
+      - name: 📤 Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}-ipk
+          path: sdk/bin/packages/**/${{ env.PACKAGE_NAME }}*.ipk
