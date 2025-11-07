@@ -7,7 +7,7 @@
             "path": "tcpdump"
         },
         "depends": {
-            "acl": [ "luci-app-tcpdump-js" ]  // ✅ 关键：必须与 ACL 文件名一致
+            "acl": [ "luci-app-tcpdump-js" ] 
         }
     }
 }
