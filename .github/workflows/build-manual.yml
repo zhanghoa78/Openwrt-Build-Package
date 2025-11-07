@@ -12,7 +12,7 @@ PKG_RELEASE:=1
 
 PKG_BUILD_DIR := $(BUILD_DIR)/$(PKG_NAME)
 
-# 只引入基础包构建规则，不依赖 luci.mk
+# 使用标准 package.mk，不依赖 luci.mk（兼容所有 SDK）
 include $(INCLUDE_DIR)/package.mk
 
 define Package/$(PKG_NAME)
@@ -25,27 +25,30 @@ define Package/$(PKG_NAME)
 endef
 
 define Package/$(PKG_NAME)/description
-	A modern LuCI web interface for tcpdump using JavaScript and RPC.
-	Capture packets via browser and download the .pcap file from /tmp/tcpdump.pcap.
+	A modern web-based interface for tcpdump using LuCI's JavaScript framework.
+	Captures packets to /tmp/tcpdump.pcap. Download via SCP or add a download link later.
 endef
 
 define Build/Prepare
+	# 复制 Lua 后端代码
 	$(CP) ./luasrc $(PKG_BUILD_DIR)/
-	$(CP) ./htdocs $(PKG_BUILD_DIR)/
+
+	# 只复制 htdocs/luci-static 内容（关键！）
+	$(CP) ./htdocs/luci-static $(PKG_BUILD_DIR)/
 endef
 
 define Build/Compile
-	# No compilation needed for Lua/JS only package
+	# No compilation needed for pure Lua/JS package
 endef
 
 define Package/$(PKG_NAME)/install
-	# Install Lua files to /usr/lib/lua/luci/
+	# 安装 Lua RPC 接口到标准位置
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/
 	$(CP) $(PKG_BUILD_DIR)/luasrc/* $(1)/usr/lib/lua/luci/
 
-	# Install static resources to /www/
-	$(INSTALL_DIR) $(1)/www/
-	$(CP) $(PKG_BUILD_DIR)/htdocs/* $(1)/www/
+	# 安装前端资源到 /www/luci-static/ （LuCI 标准路径）
+	$(INSTALL_DIR) $(1)/www/luci-static/
+	$(CP) $(PKG_BUILD_DIR)/luci-static/* $(1)/www/luci-static/
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
