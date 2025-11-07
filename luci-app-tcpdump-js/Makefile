@@ -14,17 +14,23 @@ PKG_RELEASE:=1
 # 构建时的工作目录
 PKG_BUILD_DIR := $(BUILD_DIR)/$(PKG_NAME)
 
-# 引入基础包构建规则 和 LuCI 专用规则
+# 引入基础包构建规则
 include $(INCLUDE_DIR)/package.mk
-include $(INCLUDE_DIR)/luci.mk
+
+# ⭐️ 关键修正 #1：
+# 指向现代 SDK 中 luci.mk 的正确路径 (位于 feeds 目录)
+include $(TOPDIR)/feeds/luci/luci.mk
 
 # 定义软件包元信息
 define Package/luci-app-tcpdump-js
 	# 使用 LuCI 标准模板（自动设置 SECTION、CATEGORY 等）
 	$(call Package/luci/Template)
 	TITLE:=TCPDump 的 LuCI 界面（JavaScript 版）
-	# 声明依赖：必须安装这些包才能运行本插件
-	DEPENDS:=+luci-base +luci-lib-nixio +luci-lib-rpc +tcpdump
+	
+	# ⭐️ 关键修正 #2：
+	# 将过时的 luci-lib-rpc 替换为现代的 luci-mod-rpc
+	DEPENDS:=+luci-base +luci-lib-nixio +luci-mod-rpc +tcpdump
+	
 	# 分类（在 LuCI 软件包列表中显示位置）
 	CATEGORY:=LuCI
 	SUBMENU:=Utilities
