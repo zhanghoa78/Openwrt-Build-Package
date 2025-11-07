@@ -2,12 +2,12 @@
     "luci-app-tcpdump-js": {
         "description": "Grant access to TCPDump JS RPC calls",
         "read": {
-            "ubus": {
+            "rpc": {
                 "tcpdump": [ "status" ]
             }
         },
         "write": {
-            "ubus": {
+            "rpc": {
                 "tcpdump": [ "start", "stop" ]
             }
         }
