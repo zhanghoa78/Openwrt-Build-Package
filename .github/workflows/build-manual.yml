@@ -88,11 +88,15 @@ jobs:
           echo "✅ 非交互式配置已生成，不会触发 menuconfig"
 
       # 步骤 7：编译插件
-      - name: 🛠️ 编译插件
+      - name: 🛠️ 编译插件（带完整日志）
         working-directory: ./sdk
         run: |
-          echo "🛠️ 开始编译插件：${{ env.PACKAGE_NAME }}"
-          make package/custom/${{ env.PACKAGE_NAME }}/compile V=s
+          make package/custom/${{ env.PACKAGE_NAME }}/compile V=s 2>&1 | tee build.log
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "❌ 编译失败，最后 50 行日志："
+            tail -n 50 build.log
+            exit 1
+          fi
 
       # 步骤 8：上传生成的 .ipk 文件作为构件
       - name: 📤 上传 .ipk 文件
