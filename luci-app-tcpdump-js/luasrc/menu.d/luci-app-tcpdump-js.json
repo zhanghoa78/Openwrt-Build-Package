@@ -1,5 +1,5 @@
 {
-    "admin/network/tcpdump": {
+    "admin/tcpdump": {
         "title": "TCPDump",
         "order": 90,
         "action": {
