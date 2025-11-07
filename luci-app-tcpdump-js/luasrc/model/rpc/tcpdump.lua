@@ -1,5 +1,5 @@
 --
--- LuCI RPC 后端 for tcpdump
+-- LuCI RPC 后端 for tcpdump (安全加固版)
 --
 
 local fs = require "nixio.fs"
@@ -9,57 +9,59 @@ local PID_FILE = "/tmp/tcpdump.pid"
 local LOG_FILE = "/tmp/tcpdump.log"
 local CAP_FILE = "/tmp/tcpdump.pcap"
 
--- 帮助函数：检查进程是否在运行
+-- 安全验证：网络接口
+local function validate_interface(ifname)
+    if not ifname or ifname == "" then
+        return "br-lan"
+    end
+    if ifname:match("[^a-zA-Z0-9%._%-]") then
+        return "br-lan"  -- 非法输入回退
+    end
+    return ifname
+end
+
+-- 安全验证：BPF 过滤器
+local function validate_filter(filter)
+    if not filter or filter == "" then
+        return "port 80"  -- 默认安全过滤器
+    end
+    -- 仅允许安全字符（字母数字、点、斜杠、冒号、逗号、括号、等号）
+    local safe_filter = filter:gsub("[^a-zA-Z0-9%.:/,()=]", "")
+    return safe_filter
+end
+
+-- 检查进程是否在运行
 local function is_running()
     local pid = fs.readfile(PID_FILE)
-    if pid then
-        pid = tonumber(pid)
-        if not pid then return false end
-        -- 检查 /proc/[pid] 目录是否存在
+    if pid and pid:match("^%d+$") then
         return fs.stat("/proc/" .. pid) ~= nil
     end
     return false
 end
 
 -- RPC 方法：开始抓包
--- @param interface: (string) 网络接口, e.g., 'br-lan'
--- @param filter: (string) BPF 过滤器, e.g., 'port 80'
--- @param filesize: (string) 可选的文件大小（MB）
 local function start_capture(interface, filter, filesize)
     if is_running() then
         return { error = "tcpdump is already running." }
     end
 
-    -- !! 安全警告：这是一个非常基础的输入检查 !!
-    -- !! 在生产环境中，需要更严格的过滤来防止命令注入 !!
-    if not interface or not interface:match("^[a-zA-Z0-9%-%._]+$") then
-        interface = "br-lan" -- 默认值
-    end
+    -- 安全验证输入
+    local safe_if = validate_interface(interface)
+    local safe_filter = validate_filter(filter)
 
-    if not filter or filter == "" then
-        filter = "''" -- 空过滤器
-    else
-        -- 基础的转义，防止一些简单的注入
-        filter = "'" .. filter:gsub("'", "'\\''") .. "'"
-    end
-    
-    -- ⭐️ 新增：处理文件大小限制
+    -- 处理文件大小限制
     local size_opt = ""
-    if filesize then
-        local size_mb = tonumber(filesize)
-        if size_mb and size_mb > 0 then
-            -- -C 选项单位就是“百万字节” (MB)
-            size_opt = "-C " .. size_mb
-        end
+    if filesize and tonumber(filesize) and tonumber(filesize) > 0 then
+        size_opt = "-C " .. tonumber(filesize)
     end
 
-    -- ⭐️ 将 size_opt 添加到命令中
+    -- 构建安全命令
     local command = string.format(
         "tcpdump -i %s %s -U -s 0 -w %s %s >%s 2>&1 & echo $! > %s",
-        interface,
-        size_opt, -- 添加 -C 选项
+        safe_if,
+        size_opt,
         CAP_FILE,
-        filter,
+        safe_filter,
         LOG_FILE,
         PID_FILE
     )
@@ -75,10 +77,8 @@ end
 
 -- RPC 方法：停止抓包
 local function stop_capture()
-    -- 即使不运行，也要确保清理旧文件
     local pid = fs.readfile(PID_FILE)
-    if pid and is_running() then
-        -- 发送 SIGTERM 信号
+    if pid and pid:match("^%d+$") and is_running() then
         sys.call("kill " .. pid)
     end
 
@@ -99,7 +99,7 @@ local function get_status()
     end
 end
 
--- 将本地函数暴露给 RPC
+-- ✅ 正确注册 RPC 接口（与 ACL 匹配）
 return {
     start = start_capture,
     stop = stop_capture,
