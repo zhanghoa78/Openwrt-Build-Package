@@ -15,8 +15,7 @@ jobs:
     # 在 Ubuntu 22.04 环境中运行
     runs-on: ubuntu-22.04
 
-    # ⭐️ 修正 1：在此处统一定义你的插件包名
-    # 假设这个仓库的根目录就是 luci-app-tcpdump-js 插件
+    # 在此处统一定义你的插件包名
     env:
       PACKAGE_NAME: luci-app-tcpdump-js
 
@@ -26,8 +25,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: plugin  # 将代码检出到 plugin/ 目录
-
-      # ⭐️ 步骤 2 已删除：不再需要易错的自动检测
 
       # 步骤 3：下载并解压官方 SDK
       - name: 📥 下载并解压 SDK
@@ -41,11 +38,7 @@ jobs:
           tar -xf sdk.tar.xz
           mv *-sdk-* sdk
 
-          # ⭐️ 最终修正：
-          # 我们的插件目录结构是 plugin/luci-app-tcpdump-js/
-          # 我们需要把它复制到 sdk/package/custom/
-          # 这样最终路径就是 sdk/package/custom/luci-app-tcpdump-js/Makefile
-          
+          # ⭐️ 修正：正确地将 plugin/luci-app-tcpdump-js 复制到 sdk/package/custom/
           mkdir -p sdk/package/custom
           cp -r plugin/${{ env.PACKAGE_NAME }} sdk/package/custom/
           echo "✅ 插件已复制到 sdk/package/custom/${{ env.PACKAGE_NAME }}/"
@@ -70,17 +63,14 @@ jobs:
       - name: ⚙️ 生成非交互式配置（防止终端错误）
         working-directory: ./sdk
         run: |
-          # ⭐️ 修正 3：这才是正确的非交互式配置流程
-          
           # 1. 首先，生成一个默认的 .config 文件
           make defconfig
           
           # 2. 然后，以追加（>>）的方式添加你需要的包
-          # （注意：必须包含所有依赖，如 luci-base）
           echo "CONFIG_PACKAGE_luci=y" >> .config
           echo "CONFIG_PACKAGE_luci-base=y" >> .config
           echo "CONFIG_PACKAGE_luci-lib-nixio=y" >> .config
-          echo "CONFIG_PACKAGE_luci-lib-rpc=y" >> .config
+          echo "CONFIG_PACKAGE_luci-mod-rpc=y" >> .config # 确保添加了修正后的依赖
           echo "CONFIG_PACKAGE_tcpdump=y" >> .config
           
           # 3. 统一使用变量，将我们的插件设为模块（=m 表示编译但不内置）
