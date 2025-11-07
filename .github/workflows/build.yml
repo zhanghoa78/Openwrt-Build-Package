@@ -1,0 +1,49 @@
+name: Build LuCI TCPDump IPK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout OpenWrt source
+        uses: actions/checkout@v3
+        with:
+          repository: openwrt/openwrt # 您可以换成 immortalwrt/immortalwrt
+          ref: main                    # 您可以换成 23.05 或其他分支
+          path: openwrt
+
+      - name: Checkout luci-app-tcpdump source
+        uses: actions/checkout@v3
+        with:
+          # 检出当前仓库（即 luci-app-tcpdump）
+          path: openwrt/package/luci-app-tcpdump
+
+      - name: Install feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure build
+        run: |
+          cd openwrt
+          make defconfig
+          
+      - name: Compile the package
+        run: |
+          cd openwrt
+          # V=s 打印详细日志
+          make package/luci-app-tcpdump/compile V=s
+
+      - name: Upload IPK artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: luci-app-tcpdump-ipk
+          # 编译好的 ipk 会在这里
+          path: openwrt/bin/packages/*/luci/luci-app-tcpdump_*.ipk
