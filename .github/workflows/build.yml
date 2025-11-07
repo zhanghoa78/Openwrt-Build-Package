@@ -1,52 +1,100 @@
-name: Build IPK with ImmortalWrt 23.05.7 SDK
+# 工作流名称
+name: 🛠️ 编译 luci-app-tcpdump (输入 SDK 链接)
 
+# 触发方式：仅手动触发
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch: # 允许手动点击 "Run workflow"
+  workflow_dispatch:
+    inputs:
+      sdk_url:
+        description: 'SDK 下载链接（必须是 .tar.xz 格式）'
+        required: true
+        # ✅ 改回您最初指定的 ramips/mt7620 目标 SDK
+        default: 'https://downloads.immortalwrt.org/releases/23.05.7/targets/ramips/mt7620/immortalwrt-sdk-23.05.7-ramips-mt7620_gcc-12.3.0_musl.Linux-x86_64.tar.xz'
 
-env:
-  # 您提供的 SDK 链接
-  SDK_URL: "https://downloads.immortalwrt.org/releases/23.05.7/targets/ramips/mt7620/immortalwrt-sdk-23.05.7-ramips-mt7620_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
-  SDK_FILE: "immortalwrt-sdk.tar.xz"
-  
 jobs:
-  build-ipk:
-    runs-on: ubuntu-latest
+  build:
+    # 在 Ubuntu 22.04 环境中运行
+    runs-on: ubuntu-22.04
+
+    # ✅ [关键] 更改为您的包名
+    env:
+      PACKAGE_NAME: luci-app-tcpdump
 
     steps:
-      - name: Download and Extract SDK
-        run: |
-          wget -O $SDK_FILE "$SDK_URL"
-          tar -xJvf $SDK_FILE
-          # 找到解压后的 SDK 目录名
-          SDK_DIR=$(ls -d */ | grep 'immortalwrt-sdk')
-          echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
-
-      - name: Checkout package source
+      # 步骤 1：检出当前仓库代码（即你的插件）
+      - name: ⏬ 检出插件代码
         uses: actions/checkout@v4
         with:
-          # 将您的 luci-app-tcpdump 仓库代码
-          # 检出到 SDK 的 package/luci-app-tcpdump 目录中
-          path: ${{ env.SDK_DIR }}/package/luci-app-tcpdump
+          path: plugin  # 将代码检出到 plugin/ 目录
 
-      - name: Compile the package
+      # 步骤 2：下载并解压官方 SDK
+      - name: 📥 下载、解压 SDK 并复制插件
+        env:
+          SDK_URL: ${{ github.event.inputs.sdk_url }}
         run: |
-          cd ${{ env.SDK_DIR }}
-          
-          # ✅ 修正：
-          # 在编译前运行 'make defconfig' 来自动生成一个 .config 文件
-          # 这可以防止系统尝试以交互方式运行 'menuconfig'
+          echo "📥 正在下载 SDK：$SDK_URL"
+          wget --quiet "$SDK_URL" -O sdk.tar.xz || { echo "❌ SDK 下载失败，请检查链接是否有效！"; exit 1; }
+
+          echo "📦 正在解压 SDK..."
+          tar -xf sdk.tar.xz
+          mv *-sdk-* sdk
+
+          # ⭐️ 复制插件到 SDK 的 package/custom/ 目录
+          # (这要求您的仓库根目录中有一个 'luci-app-tcpdump' 文件夹)
+          mkdir -p sdk/package/custom
+          cp -r plugin/${{ env.PACKAGE_NAME }} sdk/package/custom/
+          echo "✅ 插件已复制到 sdk/package/custom/${{ env.PACKAGE_NAME }}/"
+
+      # 步骤 3：安装编译所需系统依赖
+      - name: 🔧 安装编译依赖
+        run: |
+          sudo apt update -qq
+          sudo apt install -y -qq build-essential ccache ecj fastjar file g++ gawk \
+            gettext git libelf-dev libncurses5-dev libssl-dev python3 python3-dev \
+            python3-pip python3-setuptools python3-wheel unzip wget xz-utils zlib1g-dev
+
+      # 步骤 4：更新并安装 feeds（软件包索引）
+      - name: 🔄 更新 feeds
+        working-directory: ./sdk
+        run: |
+          echo "🔄 正在更新软件包源..."
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      # 步骤 5：【关键】生成非交互式配置文件
+      - name: ⚙️ 生成非交互式配置（防止终端错误）
+        working-directory: ./sdk
+        run: |
+          # 1. 首先，生成一个默认的 .config 文件
           make defconfig
           
-          # 现在再运行编译命令，它会找到 .config 并正常工作
-          make package/luci-app-tcpdump/compile V=s
+          # 2. 然后，以追加（>>）的方式添加你需要的包
+          # (这些是 luci-app-tcpdump 的所有依赖)
+          echo "CONFIG_PACKAGE_luci=y" >> .config
+          echo "CONFIG_PACKAGE_luci-base=y" >> .config
+          echo "CONFIG_PACKAGE_luci-lib-nixio=y" >> .config
+          echo "CONFIG_PACKAGE_luci-mod-rpc=y" >> .config
+          echo "CONFIG_PACKAGE_tcpdump=y" >> .config
+          
+          # 3. 统一使用变量，将我们的插件设为模块（=m 表示编译但不内置）
+          echo "CONFIG_PACKAGE_${{ env.PACKAGE_NAME }}=m" >> .config
+          
+          # 4. 最后，再次运行 defconfig，让构建系统自动解析并选中所有依赖
+          make defconfig
+          echo "✅ 非交互式配置已生成，不会触发 menuconfig"
 
-      - name: Upload IPK artifact
-        uses: actions/upload-artifact@v4  
+      # 步骤 6：编译插件
+      - name: 🛠️ 编译插件
+        working-directory: ./sdk
+        run: |
+          echo "🛠️ 开始编译插件：${{ env.PACKAGE_NAME }}"
+          # 编译位于 custom/ 目录下的特定包
+          make package/custom/${{ env.PACKAGE_NAME }}/compile V=s
+
+      # 步骤 7：上传生成的 .ipk 文件作为构件
+      - name: 📤 上传 .ipk 文件
+        uses: actions/upload-artifact@v4
         with:
-          name: luci-app-tcpdump-ipk-ramips
-          path: |
-            ${{ env.SDK_DIR }}/bin/packages/mipsel_24kec_dsp/luci/luci-app-tcpdump_*.ipk
-            ${{ env.SDK_DIR }}/bin/packages/mipsel_24kec_dsp/base/tcpdump_*.ipk
+          name: ${{ env.PACKAGE_NAME }}-ipk # 构件名称（使用变量）
+          path: sdk/bin/packages/**/**/*.ipk  # 自动匹配所有 .ipk
+          if-no-files-found: error  # 如果没找到 .ipk 则报错
