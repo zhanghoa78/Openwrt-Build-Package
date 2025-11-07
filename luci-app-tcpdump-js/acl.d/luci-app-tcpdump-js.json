@@ -3,12 +3,12 @@
         "description": "Grant access to TCPDump JS RPC calls",
         "read": {
             "rpc": {
-                "tcpdump": [ "status" ]
+                "luci.tcpdump": [ "status" ]  // ✅ 正确：使用完整的 RPC 路径
             }
         },
         "write": {
             "rpc": {
-                "tcpdump": [ "start", "stop" ]
+                "luci.tcpdump": [ "start", "stop" ]  // ✅ 正确：使用完整的 RPC 路径
             }
         }
     }
