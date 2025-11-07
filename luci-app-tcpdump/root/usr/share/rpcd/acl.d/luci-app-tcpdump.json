@@ -1,18 +1,15 @@
 {
-	"admin": {
-		"description": "Grant access to the TCPDump application",
-		"read": {
-			"view": [
-				"tcpdump/index"
-			]
-		},
-		"write": {},
-		"exec": {
-			"rpc": [
-				"luci.tcpdump.start",
-				"luci.tcpdump.stop",
-				"luci.tcpdump.status"
-			]
-		}
-	}
+  "tcpdump": {
+    "description": "TCPDump capture interface",
+    "read": {
+      "ubus": {
+        "luci.tcpdump": ["status"]
+      }
+    },
+    "write": {
+      "ubus": {
+        "luci.tcpdump": ["start", "stop"]
+      }
+    }
+  }
 }
