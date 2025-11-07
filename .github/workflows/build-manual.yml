@@ -39,12 +39,15 @@ jobs:
 
           echo "📦 正在解压 SDK..."
           tar -xf sdk.tar.xz
-          # 将解压出的 SDK 目录重命名为统一的 "sdk"
           mv *-sdk-* sdk
 
-          # ⭐️ 修正 2：创建目标目录，并将 plugin/ 的 *内容* 复制进去
-          mkdir -p sdk/package/custom/${{ env.PACKAGE_NAME }}
-          cp -r plugin/. sdk/package/custom/${{ env.PACKAGE_NAME }}/
+          # ⭐️ 最终修正：
+          # 我们的插件目录结构是 plugin/luci-app-tcpdump-js/
+          # 我们需要把它复制到 sdk/package/custom/
+          # 这样最终路径就是 sdk/package/custom/luci-app-tcpdump-js/Makefile
+          
+          mkdir -p sdk/package/custom
+          cp -r plugin/${{ env.PACKAGE_NAME }} sdk/package/custom/
           echo "✅ 插件已复制到 sdk/package/custom/${{ env.PACKAGE_NAME }}/"
 
       # 步骤 4：安装编译所需系统依赖
