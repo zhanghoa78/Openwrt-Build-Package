@@ -36,10 +36,10 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/tcpdump
 	$(INSTALL_DATA) ./view/tcpdump/index.htm $(1)/usr/lib/lua/luci/view/tcpdump/
 
-	# --- ✅ 在这里添加以下两行 ---
-	$(INSTALL_DIR) $(1)/usr/share/luci/acl
-	$(INSTALL_DATA) ./root/usr/share/luci/acl/luci-app-tcpdump.json $(1)/usr/share/luci/acl/
-	# --- ✅ 添加结束 ---
+	# 使用 $(CP) 来复制 root 目录下的所有文件（包括 ACL）
+	# 这会将 ./root/usr/share/luci/acl/luci-app-tcpdump.json
+	# 正确安装到 $(1)/usr/share/luci/acl/luci-app-tcpdump.json
+	$(CP) ./root/* $(1)/
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
