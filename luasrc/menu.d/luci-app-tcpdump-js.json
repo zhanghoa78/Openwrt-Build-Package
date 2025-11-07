@@ -1,0 +1,10 @@
+{
+    "admin/network/tcpdump": {
+        "title": "TCPDump",
+        "order": 90,
+        "action": {
+            "type": "view",
+            "path": "tcpdump"
+        }
+    }
+}
