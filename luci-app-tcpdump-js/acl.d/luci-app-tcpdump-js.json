@@ -1,13 +1,15 @@
 {
-    "admin/network/tcpdump": {
-        "title": "TCPDump",
-        "order": 90,
-        "action": {
-            "type": "view",
-            "path": "tcpdump"
+    "luci-app-tcpdump-js": {
+        "description": "Grant access to TCPDump JS RPC calls",
+        "read": {
+            "ubus": {
+                "tcpdump": [ "status" ]
+            }
         },
-        "depends": {
-            "acl": [ "luci-app-tcpdump-js" ]
+        "write": {
+            "ubus": {
+                "tcpdump": [ "start", "stop" ]
+            }
         }
     }
 }
