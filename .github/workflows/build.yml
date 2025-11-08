@@ -61,33 +61,32 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # 步骤 5：配置编译选项 - 修复 heredoc 语法
+      # 步骤 5：配置编译选项
       - name: ⚙️ 配置编译选项
         working-directory: ./sdk
         run: |
           # 生成默认配置
           make defconfig
           
-          # 使用多个 echo 命令代替 heredoc
+          # 添加必要的包配置
           echo "CONFIG_PACKAGE_luci=y" >> .config
           echo "CONFIG_PACKAGE_luci-base=y" >> .config
           echo "CONFIG_PACKAGE_luci-lib-nixio=y" >> .config
           echo "CONFIG_PACKAGE_luci-mod-rpc=y" >> .config
           echo "CONFIG_PACKAGE_tcpdump=y" >> .config
+          echo "CONFIG_PACKAGE_libpcap=y" >> .config
           echo "CONFIG_PACKAGE_${{ env.PACKAGE_NAME }}=m" >> .config
           
           # 让系统自动解析依赖
           make defconfig
           echo "✅ 配置完成"
 
-      # 步骤 6：编译插件
+      # 步骤 6：编译插件 - 修复：移除不存在的 check 目标
       - name: 🛠️ 编译插件
         working-directory: ./sdk
         run: |
           echo "🛠️ 开始编译插件：${{ env.PACKAGE_NAME }}"
-          # 先检查依赖
-          make package/custom/${{ env.PACKAGE_NAME }}/check V=s
-          # 然后编译
+          # 直接编译，跳过不存在的 check 目标
           make package/custom/${{ env.PACKAGE_NAME }}/compile V=s
 
       # 步骤 7：收集并上传 IPK 文件
