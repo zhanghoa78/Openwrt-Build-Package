@@ -1,4 +1,3 @@
-json
 {
     "luci-app-tcpdump": {
         "description": "Grant access to TCPDump functions",
