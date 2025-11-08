@@ -1,44 +1,34 @@
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=TCPDump
-LUCI_DEPENDS:=+tcpdump +rpcd  # ✅ 修正1：添加 rpcd 依赖
+PKG_NAME:=luci-app-tcpdump
+PKG_VERSION:=1.0
+PKG_RELEASE:=1
+
+LUCI_TITLE:=TCPDump Web Interface
+LUCI_DEPENDS:=+tcpdump +rpcd
 LUCI_PKGARCH:=all
-LUCI_DESCRIPTION:=TCPDump capture frontend for OpenWrt
+LUCI_DESCRIPTION:=Web interface for tcpdump packet capture
 LUCI_MENU:=1
 LUCI_MENU_PATH:=Network
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
-define Package/$(PKG_NAME)
-  SECTION:=luci
-  CATEGORY:=LuCI
-  SUBMENU:=Applications
-  TITLE:=$(LUCI_TITLE)
-  DEPENDS:=$(LUCI_DEPENDS)
-  PKGARCH:=all
-endef
+# ✅ 移除重复的 Package 定义，只使用 LUCI_* 变量
+# ✅ 或者使用标准的 Package 定义，但不能两者都用
 
-define Package/$(PKG_NAME)/description
-  This package provides a LuCI web interface for tcpdump network packet capture.
-  It allows users to capture and analyze TCP traffic without using the command line.
-endef
-
-define Build/Configure
-endef
-
-define Build/Compile
-endef
-
-define Package/$(PKG_NAME)/install
+define Package/luci-app-tcpdump/install
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
-	$(INSTALL_DATA) ./controller/tcpdump.lua $(1)/usr/lib/lua/luci/controller/
+	$(INSTALL_DATA) ./files/luci/controller/tcpdump.lua $(1)/usr/lib/lua/luci/controller/
 	
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/tcpdump
-	$(INSTALL_DATA) ./view/tcpdump/index.htm $(1)/usr/lib/lua/luci/view/tcpdump/
+	$(INSTALL_DATA) ./files/luci/view/tcpdump/index.htm $(1)/usr/lib/lua/luci/view/tcpdump/
 	
-	# ✅ 修正2：使用标准安装方式（推荐）
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
-	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/tcpdump.json $(1)/usr/share/rpcd/acl.d/
+	$(INSTALL_DATA) ./files/acl.d/tcpdump.json $(1)/usr/share/rpcd/acl.d/
+	
+	# ✅ 安装 RPC 后端
+	$(INSTALL_DIR) $(1)/usr/libexec/rpcd
+	$(INSTALL_BIN) ./files/rpcd/luci_tcpdump.lua $(1)/usr/libexec/rpcd/
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
