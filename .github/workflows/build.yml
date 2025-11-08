@@ -11,7 +11,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     env:
       PACKAGE_NAME: luci-app-tcpdump
 
@@ -20,55 +19,47 @@ jobs:
       - name: ⏬ 检出插件代码
         uses: actions/checkout@v4
         with:
-          path: ${{ env.PACKAGE_NAME }}
+          path: plugin
 
-      # 步骤 2：下载并解压 SDK
-      - name: 📥 下载并解压 SDK
+      # 步骤 2：下载并解压 SDK 并复制插件
+      - name: 📥 下载、解压 SDK 并复制插件
         env:
           SDK_URL: ${{ github.event.inputs.sdk_url }}
         run: |
           echo "📥 正在下载 SDK：$SDK_URL"
-          wget --progress=dot:giga "$SDK_URL" -O sdk.tar.xz || { 
-            echo "❌ SDK 下载失败，请检查链接是否有效！" 
-            exit 1 
-          }
+          wget --quiet "$SDK_URL" -O sdk.tar.xz || { echo "❌ SDK 下载失败，请检查链接是否有效！"; exit 1; }
 
           echo "📦 正在解压 SDK..."
           tar -xf sdk.tar.xz
-          SDK_DIR=$(tar -tf sdk.tar.xz | head -1 | cut -f1 -d"/")
-          mv "$SDK_DIR" sdk
-          echo "✅ SDK 解压到：sdk/"
+          mv *-sdk-* sdk
 
-          # 复制插件到 SDK - 关键：使用正确的路径
-          mkdir -p sdk/package/feeds/luci
-          cp -r ${{ env.PACKAGE_NAME }} sdk/package/feeds/luci/
-          echo "✅ 插件已复制到：sdk/package/feeds/luci/${{ env.PACKAGE_NAME }}/"
+          # ✅ 根据您的实际目录结构修正：
+          # 您的 luci-app-tcpdump 在 plugin/luci-app-tcpdump/
+          mkdir -p sdk/package/custom
+          cp -r plugin/luci-app-tcpdump sdk/package/custom/
+          echo "✅ 插件已复制到 sdk/package/custom/luci-app-tcpdump/"
 
       # 步骤 3：安装编译依赖
       - name: 🔧 安装编译依赖
         run: |
           sudo apt update -qq
           sudo apt install -y -qq build-essential ccache ecj fastjar file g++ gawk \
-            gettext git java-propose-classpath libelf-dev libncurses5-dev libssl-dev \
-            python3 python3-dev python3-pip python3-setuptools python3-wheel unzip \
-            wget xz-utils zlib1g-dev rsync
+            gettext git libelf-dev libncurses5-dev libssl-dev python3 python3-dev \
+            python3-pip python3-setuptools python3-wheel unzip wget xz-utils zlib1g-dev
 
-      # 步骤 4：更新 feeds - 关键：先更新 luci feed
+      # 步骤 4：更新 feeds
       - name: 🔄 更新 feeds
         working-directory: ./sdk
         run: |
           echo "🔄 正在更新软件包源..."
-          ./scripts/feeds update luci
+          ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # 步骤 5：配置编译选项
-      - name: ⚙️ 配置编译选项
+      # 步骤 5：生成配置
+      - name: ⚙️ 生成非交互式配置
         working-directory: ./sdk
         run: |
-          # 生成默认配置
           make defconfig
-          
-          # 添加必要的包配置
           echo "CONFIG_PACKAGE_luci=y" >> .config
           echo "CONFIG_PACKAGE_luci-base=y" >> .config
           echo "CONFIG_PACKAGE_luci-lib-nixio=y" >> .config
@@ -76,46 +67,20 @@ jobs:
           echo "CONFIG_PACKAGE_tcpdump=y" >> .config
           echo "CONFIG_PACKAGE_libpcap=y" >> .config
           echo "CONFIG_PACKAGE_${{ env.PACKAGE_NAME }}=m" >> .config
-          
-          # 让系统自动解析依赖
           make defconfig
-          echo "✅ 配置完成"
+          echo "✅ 非交互式配置已生成"
 
-      # 步骤 6：调试步骤 - 检查包是否存在
-      - name: 🔍 调试：检查包结构
-        working-directory: ./sdk
-        run: |
-          echo "🔍 检查包目录结构..."
-          find . -name "*tcpdump*" -type d | head -20
-          echo "🔍 检查 feeds 状态..."
-          ./scripts/feeds list | grep tcpdump || echo "未在 feeds 中找到"
-          echo "🔍 检查包文件..."
-          ls -la package/feeds/luci/${{ env.PACKAGE_NAME }}/ || echo "包目录不存在"
-
-      # 步骤 7：编译插件 - 使用正确的目标路径
+      # 步骤 6：编译插件
       - name: 🛠️ 编译插件
         working-directory: ./sdk
         run: |
           echo "🛠️ 开始编译插件：${{ env.PACKAGE_NAME }}"
-          # 使用 feeds 路径编译
-          make package/feeds/luci/${{ env.PACKAGE_NAME }}/compile V=s
+          make package/custom/${{ env.PACKAGE_NAME }}/compile V=s
 
-      # 步骤 8：收集并上传 IPK 文件
-      - name: 📤 上传 IPK 文件
+      # 步骤 7：上传 IPK 文件
+      - name: 📤 上传 .ipk 文件
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.PACKAGE_NAME }}-ipk
-          path: |
-            sdk/bin/packages/**/**/luci-app-tcpdump*.ipk
-            sdk/bin/packages/**/**/luci-app-tcpdump*.ipk.manifest
+          path: sdk/bin/packages/**/**/*.ipk
           if-no-files-found: error
-          retention-days: 7
-
-      # 步骤 9：显示编译结果摘要
-      - name: 📋 编译结果摘要
-        run: |
-          echo "🎉 编译完成！"
-          echo "📦 生成的 IPK 文件："
-          find sdk/bin/packages -name "luci-app-tcpdump*.ipk" -type f | while read file; do
-            echo "   - $file ($(du -h "$file" | cut -f1))"
-          done
