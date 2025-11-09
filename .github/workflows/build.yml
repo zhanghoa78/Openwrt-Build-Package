@@ -31,8 +31,24 @@ jobs:
           echo "📦 正在解压 SDK..."
           tar -xf sdk.tar.xz
           mv *-sdk-* sdk
-          # ✅ 根据您的实际目录结构修正：
-          # 您的 luci-app-tcpdump 在 plugin/luci-app-tcpdump/
+          
+          # ✅ 关键修改：检查插件目录结构
+          echo "🔍 检查插件目录结构..."
+          if [ -d "plugin/luci-app-tcpdump" ]; then
+            echo "✅ 找到 plugin/luci-app-tcpdump 目录"
+            ls -la plugin/luci-app-tcpdump/
+          elif [ -d "plugin" ]; then
+            echo "📁 当前 plugin 目录内容:"
+            ls -la plugin/
+            # 如果插件文件直接在 plugin 目录下，创建正确的包结构
+            mkdir -p plugin/luci-app-tcpdump
+            cp -r plugin/* plugin/luci-app-tcpdump/ 2>/dev/null || true
+          else
+            echo "❌ 未找到插件文件"
+            exit 1
+          fi
+          
+          # 复制插件到 SDK
           mkdir -p sdk/package/custom
           cp -r plugin/luci-app-tcpdump sdk/package/custom/
           echo "✅ 插件已复制到 sdk/package/custom/luci-app-tcpdump/"
@@ -73,7 +89,12 @@ jobs:
         working-directory: ./sdk
         run: |
           echo "🛠️ 开始编译插件：${{ env.PACKAGE_NAME }}"
-          make package/custom/${{ env.PACKAGE_NAME }}/compile V=s
+          # 先检查包是否存在
+          echo "🔍 检查包目录..."
+          find package/ -name "${{ env.PACKAGE_NAME }}" -type d
+          
+          # 编译特定包
+          make package/custom/${{ env.PACKAGE_NAME }}/compile V=s -j$(nproc)
 
       # 步骤 7：上传 IPK 文件
       - name: 📤 上传 .ipk 文件
@@ -82,3 +103,9 @@ jobs:
           name: ${{ env.PACKAGE_NAME }}-ipk
           path: sdk/bin/packages/**/**/*.ipk
           if-no-files-found: error
+
+      # 步骤 8：显示编译结果
+      - name: 📋 显示编译结果
+        run: |
+          echo "📦 编译完成的 IPK 文件："
+          find sdk/bin/packages -name "*.ipk" -type f
