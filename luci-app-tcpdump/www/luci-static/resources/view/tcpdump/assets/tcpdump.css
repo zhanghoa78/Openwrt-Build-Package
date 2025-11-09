@@ -1,0 +1,305 @@
+/* TCPDump 界面样式 */
+.interface-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.interface-select {
+    min-width: 200px;
+}
+
+.filter-input-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.filter-input {
+    flex: 1;
+    max-width: 400px;
+}
+
+.advanced-filter-btn {
+    white-space: nowrap;
+}
+
+.port-preset-row {
+    margin: 15px 0;
+}
+
+.preset-label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: bold;
+    color: #666;
+}
+
+.port-preset-container {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.port-preset-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.file-size-row {
+    display: flex;
+    align-items: center;
+}
+
+.file-size-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.file-size-input {
+    width: 80px;
+    text-align: center;
+}
+
+.file-size-display {
+    margin-left: 15px;
+    color: #666;
+    font-size: 0.9em;
+}
+
+.tcpdump-btn-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.interface-info {
+    color: #666;
+    font-size: 0.9em;
+    font-style: italic;
+}
+
+.tips-list {
+    margin: 10px 0;
+    padding-left: 20px;
+}
+
+.tips-list li {
+    margin-bottom: 5px;
+    line-height: 1.4;
+}
+
+/* 按钮样式 */
+.tcpdump-btn {
+    padding: 8px 16px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #f9f9f9;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s ease;
+    text-decoration: none;
+    color: #333;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.tcpdump-btn:hover:not(:disabled) {
+    background: #e9e9e9;
+    border-color: #999;
+}
+
+.tcpdump-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.tcpdump-btn-apply {
+    background: #8add6d;
+    border-color: #5daa3c;
+    color: white;
+}
+
+.tcpdump-btn-apply:hover:not(:disabled) {
+    background: #79c35e;
+}
+
+.tcpdump-btn-reset {
+    background: #ff8936;
+    border-color: #e56a1a;
+    color: white;
+}
+
+.tcpdump-btn-reset:hover:not(:disabled) {
+    background: #e57a2e;
+}
+
+.tcpdump-btn-download {
+    background: #6d8add;
+    border-color: #3c5daa;
+    color: white;
+}
+
+.tcpdump-btn-download:hover:not(:disabled) {
+    background: #5e79c3;
+}
+
+.tcpdump-btn-remove {
+    background: #dd6d6d;
+    border-color: #aa3c3c;
+    color: white;
+}
+
+.tcpdump-btn-remove:hover:not(:disabled) {
+    background: #c35e5e;
+}
+
+.tcpdump-btn-preset {
+    padding: 6px 12px;
+    font-size: 12px;
+    background: #e9ecef;
+    border: 1px solid #ced4da;
+}
+
+.tcpdump-btn-preset:hover:not(:disabled) {
+    background: #dee2e6;
+}
+
+.tcpdump-btn-preset.active {
+    background: #007bff;
+    border-color: #0056b3;
+    color: white;
+}
+
+.tcpdump-btn-reload {
+    padding: 6px 12px;
+    font-size: 12px;
+}
+
+/* 状态指示器 */
+.status-indicator {
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-weight: bold;
+    display: inline-block;
+}
+
+.status-loading {
+    background: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffeaa7;
+}
+
+.status-running {
+    background: #d1ecf1;
+    color: #0c5460;
+    border: 1px solid #bee5eb;
+}
+
+.status-stopped {
+    background: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+
+/* 通知动画 */
+@keyframes slideIn {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes slideOut {
+    from { transform: translateX(0); opacity: 1; }
+    to { transform: translateX(100%); opacity: 0; }
+}
+
+.alert-message.success {
+    background: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+.alert-message.error {
+    background: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+
+.alert-message.info {
+    background: #d1ecf1;
+    color: #0c5460;
+    border: 1px solid #bee5eb;
+}
+
+/* 进度条样式 */
+.progress-container {
+    margin-top: 5px;
+}
+
+.progress-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8em;
+    color: #666;
+}
+
+.progress-bar {
+    background: #f0f0f0;
+    height: 6px;
+    border-radius: 3px;
+    margin-top: 2px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    background: #007bff;
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}
+
+.progress-fill.warning {
+    background: #ffc107;
+}
+
+.progress-fill.danger {
+    background: #dc3545;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+    .interface-row {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .filter-input-row {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .filter-input {
+        max-width: 100%;
+    }
+    
+    .tcpdump-btn-group {
+        flex-direction: column;
+    }
+    
+    .tcpdump-btn {
+        width: 100%;
+        justify-content: center;
+    }
+    
+    .port-preset-line {
+        flex-direction: column;
+    }
+    
+    .file-size-container {
+        flex-wrap: wrap;
+    }
+}
