@@ -30,11 +30,11 @@ endef
 define Package/luci-app-tcpdump/install
 	# 安装 LuCI 控制器 - 直接从当前目录安装
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
-	$(INSTALL_DATA) ./usr/lib/lua/luci/controller/tcpdump.lua $(1)/usr/lib/lua/luci/controller/
+	$(INSTALL_DATA) ./root/usr/lib/lua/luci/controller/tcpdump.lua $(1)/usr/lib/lua/luci/controller/
 	
 	# 安装 LuCI 视图模板 - 直接从当前目录安装
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/tcpdump
-	$(INSTALL_DATA) ./usr/lib/lua/luci/view/tcpdump/overview.htm $(1)/usr/lib/lua/luci/view/tcpdump/
+	$(INSTALL_DATA) ./root/usr/lib/lua/luci/view/tcpdump/overview.htm $(1)/usr/lib/lua/luci/view/tcpdump/
 	
 	# 安装静态资源 (CSS) - 直接从当前目录安装
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/tcpdump/assets
