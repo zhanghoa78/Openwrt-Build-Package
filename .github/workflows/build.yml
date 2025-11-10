@@ -12,91 +12,98 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     env:
+      # 将包名定义为环境变量，方便引用
       PACKAGE_NAME: luci-app-tcpdump
+      # 从 SDK URL 中提取一个可用于缓存的键值
+      SDK_KEY: ${{ hashFiles(github.event.inputs.sdk_url) }}
 
     steps:
       # 步骤 1：检出当前仓库代码
       - name: ⏬ 检出插件代码
         uses: actions/checkout@v4
-        with:
-          path: plugin
 
-      # 步骤 2：下载并解压 SDK 并复制插件
-      - name: 📥 下载、解压 SDK 并复制插件
+      # 步骤 2：下载并解压 SDK
+      - name: 📥 下载并解压 SDK
         env:
           SDK_URL: ${{ github.event.inputs.sdk_url }}
         run: |
           echo "📥 正在下载 SDK：$SDK_URL"
           wget --quiet "$SDK_URL" -O sdk.tar.xz || { echo "❌ SDK 下载失败，请检查链接是否有效！"; exit 1; }
+          
           echo "📦 正在解压 SDK..."
-          tar -xf sdk.tar.xz
-          mv *-sdk-* sdk
+          # 创建目标目录，并使用 --strip-components=1 解压，更健壮
+          mkdir -p sdk
+          tar -xf sdk.tar.xz --strip-components=1 -C sdk
           
-          # ✅ 直接复制 luci-app-tcpdump 目录到 SDK
-          echo "🔍 检查插件目录结构..."
-          ls -la plugin/
-          
-          # 复制整个 luci-app-tcpdump 目录到 SDK
-          mkdir -p sdk/package/custom
-          cp -r plugin/luci-app-tcpdump sdk/package/custom/
-          
-          echo "✅ 插件已复制到 sdk/package/custom/luci-app-tcpdump/"
-          echo "📁 验证文件结构："
-          find sdk/package/custom/luci-app-tcpdump -type f
+          echo "✅ SDK 已准备就绪"
 
       # 步骤 3：安装编译依赖
       - name: 🔧 安装编译依赖
         run: |
-          sudo apt update -qq
-          sudo apt install -y -qq build-essential ccache ecj fastjar file g++ gawk \
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential ccache ecj fastjar file g++ gawk \
             gettext git libelf-dev libncurses5-dev libssl-dev python3 python3-dev \
-            python3-pip python3-setuptools python3-wheel unzip wget xz-utils zlib1g-dev
+            unzip wget xz-utils zlib1g-dev
 
-      # 步骤 4：更新 feeds
-      - name: 🔄 更新 feeds
+      # 步骤 4：缓存 OpenWrt 下载和 feeds
+      - name:  caching 缓存 dl 目录和 feeds
+        uses: actions/cache@v4
+        with:
+          path: |
+            sdk/dl
+            sdk/feeds
+          # 使用 SDK 的 URL 哈希作为缓存键的一部分，确保不同 SDK 使用不同缓存
+          key: ${{ runner.os }}-openwrt-${{ env.SDK_KEY }}-${{ hashFiles('sdk/feeds.conf.default') }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-${{ env.SDK_KEY }}-
+
+      # 步骤 5：复制插件并更新 feeds
+      - name: 🔄 复制插件并更新 feeds
         working-directory: ./sdk
         run: |
+          # 将插件复制到 package/custom 目录
+          # 这个命令假设你的仓库根目录就是 luci-app-tcpdump 目录
+          mkdir -p package/custom
+          cp -r $GITHUB_WORKSPACE package/custom/${{ env.PACKAGE_NAME }}
+          
+          echo "✅ 插件已复制到 package/custom/${{ env.PACKAGE_NAME }}/"
+          
           echo "🔄 正在更新软件包源..."
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # 步骤 5：生成配置
-      - name: ⚙️ 生成非交互式配置
+      # 步骤 6：生成配置（更可靠的方式）
+      - name: ⚙️ 生成配置
         working-directory: ./sdk
         run: |
-          make defconfig
-          echo "CONFIG_PACKAGE_luci=y" >> .config
-          echo "CONFIG_PACKAGE_luci-base=y" >> .config
-          echo "CONFIG_PACKAGE_luci-lib-nixio=y" >> .config
-          echo "CONFIG_PACKAGE_luci-mod-rpc=y" >> .config
-          echo "CONFIG_PACKAGE_tcpdump=y" >> .config
-          echo "CONFIG_PACKAGE_libpcap=y" >> .config
+          # 拷贝默认配置
+          cp .config.old .config || make defconfig
+          
+          # 使用 OpenWrt 的脚本来启用包和它的依赖
+          # 'm' 表示编译成模块 (ipk), 'y' 表示编译进固件
           echo "CONFIG_PACKAGE_${{ env.PACKAGE_NAME }}=m" >> .config
+          
+          # 让编译系统自动处理依赖
           make defconfig
-          echo "✅ 非交互式配置已生成"
+          
+          echo "✅ 配置已生成"
 
-      # 步骤 6：编译插件
+      # 步骤 7：编译插件
       - name: 🛠️ 编译插件
         working-directory: ./sdk
         run: |
           echo "🛠️ 开始编译插件：${{ env.PACKAGE_NAME }}"
-          # 检查包目录和文件
-          echo "🔍 检查包目录结构..."
-          find package/custom/luci-app-tcpdump -type f
+          # 检查包是否被识别
+          ./scripts/feeds list | grep ${{ env.PACKAGE_NAME }} || { echo "❌ 插件未被编译系统识别！"; exit 1; }
           
-          # 编译特定包
-          make package/custom/${{ env.PACKAGE_NAME }}/compile V=s -j$(nproc)
+          # 编译特定包，V=s 提供详细日志
+          make package/${{ env.PACKAGE_NAME }}/compile V=s -j$(nproc)
 
-      # 步骤 7：上传 IPK 文件
+      # 步骤 8：整理并上传 IPK 文件
       - name: 📤 上传 .ipk 文件
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.PACKAGE_NAME }}-ipk
-          path: sdk/bin/packages/**/**/*.ipk
+          name: ${{ env.PACKAGE_NAME }}-ipks
+          # 优化路径，只上传我们自己编译的包和它的直接依赖
+          path: sdk/bin/packages/**/custom/*.ipk
           if-no-files-found: error
-
-      # 步骤 8：显示编译结果
-      - name: 📋 显示编译结果
-        run: |
-          echo "📦 编译完成的 IPK 文件："
-          find sdk/bin/packages -name "*.ipk" -type f
