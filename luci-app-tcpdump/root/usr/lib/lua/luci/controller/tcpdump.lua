@@ -14,33 +14,25 @@ end
 
 -- 获取网络接口列表
 function action_interfaces()
-    local util = require "luci.util"
-    local nixio = require "nixio"
     local http = require "luci.http"
-    
+    local sys = require "luci.sys"
+
     local interfaces = {}
-    local virtual_interfaces = {"lo"}
-    
-    local status, err = pcall(function()
-        local fd = nixio.fs.dir("/sys/class/net/")
-        if fd then
-            for entry in fd do
-                if entry ~= "." and entry ~= ".." then
-                    if not util.contains(virtual_interfaces, entry) then
-                        table.insert(interfaces, entry)
-                    end
-                end
-            end
-            fd:close()
+    local res = sys.exec("ls /sys/class/net/ 2>/dev/null")
+    local list = (type(res) == "table") and res.out or (res or "")
+
+    for iface in list:gmatch("[^\n]+") do
+        iface = iface:match("^%s*(.-)%s*$")
+        if iface ~= "" and iface ~= "lo" then
+            table.insert(interfaces, iface)
         end
-    end)
-    
-    if not status or #interfaces == 0 then
+    end
+
+    if #interfaces == 0 then
         interfaces = {"br-lan", "eth0", "eth1", "wlan0", "wlan1"}
     end
-    
+
     table.sort(interfaces)
-    
     http.prepare_content("application/json")
     http.write_json(interfaces)
 end
