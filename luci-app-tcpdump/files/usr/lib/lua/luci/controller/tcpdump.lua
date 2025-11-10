@@ -1,266 +1,223 @@
-module("luci.controller.tcpdump", package.seeall)
+-- tcpdump.lua - Advanced and Robust LuCI controller for tcpdump
+-- Final Version: Implements robust process identification via command-line signature,
+-- removing the unreliable PID file dependency and ensuring safe process termination.
 
--- 定义常量，便于维护
-local PID_FILE = "/var/run/tcpdump.pid"
-local CAPTURE_FILE = "/tmp/tcpdump.pcap"
-local EBTABLES_INSTALLED = (nixio.fs.access("/usr/sbin/ebtables"))
+module("luci.controller.admin.services.tcpdump", package.seeall)
+
+local sys = require "luci.sys"
+local http = require "luci.http"
+local util = require "luci.util"
+local fs = require "nixio.fs"
+
+-- Configuration constants
+local PCAP_FILE = "/tmp/tcpdump.pcap"
+-- This is our unique process signature. We use it to find the correct process.
+local PROCESS_SIGNATURE = "tcpdump -w " .. PCAP_FILE
 
 function index()
-    entry({"admin", "services", "tcpdump"}, firstchild(), _("TCPDump"), 60).dependent = false
-    entry({"admin", "services", "tcpdump", "overview"}, template("tcpdump/overview"), _("Overview"), 1)
+    entry({"admin", "services", "tcpdump"}, view("admin_services/tcpdump"), _("TCPDump"), 70).dependent = true
     
-    -- API 接口
+    -- API endpoints for the modern frontend
     entry({"admin", "services", "tcpdump", "interfaces"}, call("action_interfaces"))
-    entry({"admin", "services", "tcpdump", "status"}, call("action_status")) -- 合并后的状态接口
+    entry({"admin", "services", "tcpdump", "status"}, call("action_status"))
     entry({"admin", "services", "tcpdump", "start"}, call("action_start"))
     entry({"admin", "services", "tcpdump", "stop"}, call("action_stop"))
     entry({"admin", "services", "tcpdump", "download"}, call("action_download"))
     entry({"admin", "services", "tcpdump", "delete"}, call("action_delete"))
-    entry({"admin", "services", "tcpdump", "broute"}, call("action_broute")) -- 新增：控制 ebtables
+    entry({"admin", "services", "tcpdump", "broute"}, call("action_broute"))
 end
 
--- 辅助函数：检查 PID 是否正在运行
-local function is_pid_running(pid)
-    return pid and nixio.fs.access("/proc/" .. pid)
+-- [RELIABILITY UPGRADE]
+-- Get PID by scanning the process list for our unique signature in real-time.
+-- This is the robust replacement for the stale PID file method.
+local function get_pid_by_signature()
+    -- Command breakdown:
+    -- 1. `ps`: List all processes. In some busybox versions, 'ps w' provides wider output.
+    -- 2. `grep "%s"`: Find the line containing our unique signature.
+    -- 3. `grep -v 'grep'`: Exclude the grep process itself from the results.
+    -- 4. `awk '{print $1}'`: Print the first column, which is the PID.
+    local cmd = string.format("ps w | grep '%s' | grep -v 'grep' | awk '{print $1}'", PROCESS_SIGNATURE)
+    local pid = util.trim(sys.exec(cmd))
+    
+    -- Return the PID only if it's a valid number, otherwise return nil.
+    if pid and tonumber(pid) then
+        return pid
+    end
+    return nil
 end
 
--- 辅助函数：读取文件内容
-local function read_file(path)
-    local f = io.open(path, "r")
-    if not f then return nil end
-    local content = f:read("*a")
-    f:close()
-    return content and content:match("^%s*(.-)%s*$")
+-- JSON response helper
+local function json_response(data)
+    http.prepare_content("application/json")
+    http.write_json(data)
 end
 
--- 获取网络接口列表 (逻辑不变)
+-- API: Return list of network interfaces
 function action_interfaces()
-    local util = require "luci.util"
-    local nixio = require "nixio"
-    local http = require "luci.http"
-    
     local interfaces = {}
-    local virtual_interfaces = {"lo"}
-    
-    local status, err = pcall(function()
-        local fd = nixio.fs.dir("/sys/class/net/")
-        if fd then
-            for entry in fd do
-                if entry ~= "." and entry ~= ".." then
-                    if not util.contains(virtual_interfaces, entry) then
-                        table.insert(interfaces, entry)
-                    end
-                end
-            end
-            fd:close()
-        end
-    end)
-    
-    if not status or #interfaces == 0 then
-        -- 尝试从 ip link 获取，作为更可靠的备用方案
-        local ip_output = util.trim(util.exec("ip -o link show | cut -d' ' -f2 | cut -d: -f1"))
-        if ip_output and ip_output ~= "" then
-            for iface in ip_output:gmatch("[^%s]+") do
-                if not util.contains(virtual_interfaces, iface) then
-                    table.insert(interfaces, iface)
-                end
-            end
-        else
-            interfaces = {"br-lan", "eth0", "wlan0"} -- 最后的硬编码备用
-        end
+    -- Using sys.net.get_interfaces() is more robust than parsing ifconfig
+    for _, dev in ipairs(sys.net.get_interfaces()) do
+        table.insert(interfaces, dev:name())
     end
-    
-    table.sort(interfaces)
-    http.prepare_content("application/json")
-    http.write_json(interfaces)
+    json_response(interfaces)
 end
 
--- 统一的状态检查接口
+-- API: Return current status of tcpdump
 function action_status()
-    local util = require "luci.util"
-    local nixio = require "nixio"
-    local http = require "luci.http"
-    
-    local result = {
-        running = false,
-        file_exists = false,
-        file_size = 0,
-        pid = nil,
-        interface = nil,
-        size_limit = nil,
-        ebtables_installed = EBTABLES_INSTALLED,
-        broute_enabled = false
-    }
-    
-    -- 检查 ebtables 状态
-    if EBTABLES_INSTALLED then
-        local broute_rules = util.trim(util.exec("ebtables -t broute -L BROUTING"))
-        if broute_rules:find("ACCEPT") then
-            result.broute_enabled = true
-        end
+    -- Now uses the new, reliable PID detection function.
+    local pid = get_pid_by_signature()
+    local file_stat = fs.stat(PCAP_FILE)
+    local ebtables_installed = sys.pkg.is_installed("ebtables")
+    local broute_enabled = false
+
+    if ebtables_installed then
+        -- Check if the broute rule exists and is active. The '-q' makes grep silent.
+        local broute_check_cmd = "ebtables -t broute -L FORWARD | grep -- '-p 802_1Q --vlan-encap 0x8100 -j broute --broute-target ACCEPT' -q"
+        broute_enabled = (sys.call(broute_check_cmd) == 0)
     end
     
-    local pid = read_file(PID_FILE)
-    if is_pid_running(pid) then
-        result.running = true
-        result.pid = pid
-        
-        -- 从 /proc 获取更可靠的命令行信息
-        local cmdline = read_file("/proc/" .. pid .. "/cmdline")
-        if cmdline then
-            cmdline = cmdline:gsub("\0", " ")
-            result.interface = cmdline:match("-i%s+([%w%-_%.]+)")
-            local size_mb = cmdline:match("TCPDUMP_SIZE_LIMIT=(%d+)")
-            if size_mb then
-                result.size_limit = tonumber(size_mb)
+    json_response({
+        running = (pid ~= nil),
+        pid = pid,
+        file_exists = (file_stat ~= nil),
+        file_size = file_stat and file_stat.size or 0,
+        ebtables_installed = ebtables_installed,
+        broute_enabled = broute_enabled,
+    })
+end
+
+-- API: Start the tcpdump capture
+function action_start()
+    -- Check for running process using the new function before starting.
+    if get_pid_by_signature() then
+        return json_response({ success = false, message = "抓包已在运行中。" })
+    end
+
+    -- Security validation for all inputs
+    local iface = http.formvalue("interface")
+    local filter = http.formvalue("filter") or ""
+    local filesize_mb = tonumber(http.formvalue("filesize"))
+    local count = tonumber(http.formvalue("count"))
+
+    -- 1. Validate interface exists
+    local iface_valid = false
+    if iface then
+        for _, dev in ipairs(sys.net.get_interfaces()) do
+            if dev:name() == iface then
+                iface_valid = true
+                break
             end
         end
     end
-    
-    local stat = nixio.fs.stat(CAPTURE_FILE)
-    if stat then
-        result.file_exists = true
-        result.file_size = stat.size
-        
-        -- 如果达到大小限制，自动停止
-        if result.running and result.size_limit and stat.size >= result.size_limit * 1024 * 1024 then
-            action_stop_internal()
-            result.running = false -- 更新状态为已停止
-            result.size_limit_reached = true
-        end
+    if not iface_valid then
+        return json_response({ success = false, message = "错误：无效的网络接口。" })
     end
     
-    http.prepare_content("application/json")
-    http.write_json(result)
-end
-
--- 内部停止函数，更可靠
-local function action_stop_internal()
-    local pid = read_file(PID_FILE)
-    if is_pid_running(pid) then
-        -- 优雅地终止
-        os.execute("kill " .. pid .. " >/dev/null 2>&1")
-        nixio.nanosleep(500000000) -- 等待 0.5 秒
+    -- 2. Basic validation for other parameters to prevent command injection
+    if filesize_mb and not (filesize_mb > 0) then filesize_mb = nil end
+    if count and not (count > 0) then count = nil end
+    -- A simple filter validation to prevent shell metacharacters like ; & | ` $ ()
+    if filter:match("[;&|`$()]") then
+        return json_response({ success = false, message = "错误：过滤器包含无效字符。" })
     end
 
-    -- 强制清理，作为保险
-    if is_pid_running(pid) then
-        os.execute("kill -9 " .. pid .. " >/dev/null 2>&1")
+    -- Build the command safely
+    local cmd_parts = {"tcpdump", "-i", iface, "-w", PCAP_FILE}
+    if filesize_mb then
+        table.insert(cmd_parts, "-C")
+        table.insert(cmd_parts, tostring(math.floor(filesize_mb)))
+        table.insert(cmd_parts, "-W")
+        table.insert(cmd_parts, "1") -- Rotate between 1 file
     end
-    
-    -- 最后的保障，清理所有可能的残留进程
-    os.execute("pkill -f 'tcpdump.*" .. CAPTURE_FILE .. "' >/dev/null 2>&1")
-    
-    nixio.fs.unlink(PID_FILE)
-end
-
--- 启动抓包
-function action_start()
-    local http = require "luci.http"
-    local util = require "luci.util"
-    local nixio = require "nixio"
-    local sys = require "luci.sys"
-
-    local interface = http.formvalue("interface")
-    local filter = http.formvalue("filter") or ""
-    local filesize = http.formvalue("filesize") or ""
-    local count = http.formvalue("count") or ""
-    
-    -- 安全验证
-    if not (interface and interface:match("^[%w%-_%.]+$") and nixio.fs.access("/sys/class/net/" .. interface)) then
-        http.write_json({success = false, message = "无效或不存在的网络接口"})
-        return
-    end
-    
-    if filter:match("[;&|$`]") then -- 基础安全过滤
-        http.write_json({success = false, message = "过滤器包含非法字符"})
-        return
-    end
-
-    -- 启动前清理
-    action_stop_internal()
-    nixio.fs.unlink(CAPTURE_FILE)
-    
-    local cmd_parts = {
-        "/usr/sbin/tcpdump",
-        "-i", interface,
-        "-U", -- 实时写入，便于监控文件大小
-        "-w", CAPTURE_FILE
-    }
-
-    if count and count:match("^%d+$") and tonumber(count) > 0 then
+    if count then
         table.insert(cmd_parts, "-c")
-        table.insert(cmd_parts, count)
+        table.insert(cmd_parts, tostring(math.floor(count)))
+    end
+
+    -- The command is executed without creating a PID file.
+    -- The '&' at the end runs it in the background.
+    local full_cmd_str
+    if filter and #filter > 0 then
+        -- Safely quote the filter argument
+        full_cmd_str = table.concat(cmd_parts, " ") .. " " .. "'" .. filter:gsub("'", "'\\''") .. "'"
+    else
+        full_cmd_str = table.concat(cmd_parts, " ")
+    end
+    sys.call(full_cmd_str .. " >/dev/null 2>&1 &")
+    
+    -- Wait a moment to allow the process to start, then verify it's running.
+    util.nanosleep(500 * 1000 * 1000) -- 500ms
+    if get_pid_by_signature() then
+        json_response({ success = true, message = "抓包已成功启动。" })
+    else
+        json_response({ success = false, message = "启动抓包失败，请检查参数或系统日志。" })
+    end
+end
+
+-- API: Stop the tcpdump capture
+function action_stop()
+    -- Find the real PID in real-time before killing.
+    local pid = get_pid_by_signature()
+    if pid then
+        -- Send SIGTERM (15) for a graceful shutdown, allowing tcpdump to flush buffers.
+        sys.call("kill " .. pid)
     end
     
-    -- 过滤器必须是最后一个参数，并且用单引号包裹，最安全
-    if filter ~= "" then
-        table.insert(cmd_parts, filter)
-    end
-
-    -- 使用环境变量传递大小限制，而不是解析ps，更可靠
-    local env = nil
-    if filesize and filesize:match("^%d+$") and tonumber(filesize) > 0 then
-        env = "TCPDUMP_SIZE_LIMIT=" .. filesize
-    end
-
-    -- 使用luci.sys.process.spawn执行，并获取PID
-    local pid = sys.process.spawn(cmd_parts, nil, nil, env)
-
-    -- 检查进程是否成功启动
-    nixio.nanosleep(200000000) -- 等待 0.2 秒
-    if is_pid_running(pid) then
-        nixio.fs.writefile(PID_FILE, tostring(pid))
-        http.write_json({success = true, message = "TCPDump 启动成功 (PID: " .. pid .. ")"})
+    -- As a safety measure, always try to disable broute on stop
+    sys.call("ebtables -t broute -D FORWARD -p 802_1Q --vlan-encap 0x8100 -j broute --broute-target ACCEPT >/dev/null 2>&1")
+    
+    -- Wait a moment and verify the process is truly gone.
+    util.nanosleep(500 * 1000 * 1000)
+    if not get_pid_by_signature() then
+        json_response({ success = true, message = "抓包已成功停止。" })
     else
-        http.write_json({success = false, message = "TCPDump 启动失败，请检查接口或过滤器是否正确"})
+        json_response({ success = false, message = "停止进程失败，可能需要手动干预。" })
     end
 end
 
--- 停止抓包
-function action_stop()
-    action_stop_internal()
-    http.write_json({success = true, message = "抓包已停止"})
-end
-
--- 删除文件
-function action_delete()
-    action_stop_internal()
-    nixio.fs.unlink(CAPTURE_FILE)
-    http.write_json({success = true, message = "抓包文件已删除"})
-end
-
--- 下载文件 (逻辑微调，增加错误处理)
+-- API: Download the capture file
 function action_download()
-    local http = require "luci.http"
-    if not nixio.fs.access(CAPTURE_FILE) then
+    if fs.access(PCAP_FILE) then
+        http.prepare_content("application/vnd.tcpdump.pcap")
+        http.set_header("Content-Disposition", "attachment; filename=\"tcpdump.pcap\"")
+        http.write_file(PCAP_FILE)
+    else
         http.status(404, "Not Found")
-        http.prepare_content("text/plain")
-        http.write("抓包文件不存在")
-        return
+        http.write("文件未找到。")
     end
-    http.setfilehandler(CAPTURE_FILE)
-    http.header('Content-Disposition', 'attachment; filename="tcpdump_' .. os.date("%Y%m%d_%H%M%S") .. '.pcap"')
 end
 
--- 新增：控制 broute (桥接流量捕获)
-function action_broute()
-    local http = require "luci.http"
-    local util = require "luci.util"
-    local enabled = http.formvalue("enable") == "true"
+-- API: Delete the capture file
+function action_delete()
+    if fs.access(PCAP_FILE) then
+        fs.unlink(PCAP_FILE)
+        json_response({ success = true, message = "文件已成功删除。" })
+    else
+        json_response({ success = false, message = "文件不存在或已被删除。" })
+    end
+end
 
-    if not EBTABLES_INSTALLED then
-        http.write_json({success = false, message = "ebtables 未安装"})
-        return
+-- API: Manage ebtables brouting for layer 2 traffic
+function action_broute()
+    if not sys.pkg.is_installed("ebtables") then
+        return json_response({ success = false, message = "错误：ebtables 未安装。" })
     end
 
-    -- 总是先清空规则，确保干净
-    util.exec("ebtables -t broute -F")
-
-    if enabled then
-        util.exec("ebtables -t broute -A BROUTING -j ACCEPT")
-        http.write_json({success = true, message = "桥接流量捕获已开启"})
+    local enable = http.formvalue("enable") == "true"
+    local rule = "-p 802_1Q --vlan-encap 0x8100 -j broute --broute-target ACCEPT"
+    
+    if enable then
+        -- Check if the rule already exists to avoid duplicates
+        local check_cmd = "ebtables -t broute -L FORWARD | grep -- '-p 802_1Q --vlan-encap 0x8100 -j broute --broute-target ACCEPT' -q"
+        if sys.call(check_cmd) ~= 0 then
+            sys.call("ebtables -t broute -A FORWARD " .. rule)
+            json_response({ success = true, message = "二层桥接流量捕获已开启。" })
+        else
+            json_response({ success = true, message = "功能已处于开启状态。" })
+        end
     else
-        http.write_json({success = true, message = "桥接流量捕获已关闭"})
+        -- Deleting the rule is idempotent; no harm if it doesn't exist.
+        sys.call("ebtables -t broute -D FORWARD " .. rule .. " >/dev/null 2>&1")
+        json_response({ success = true, message = "二层桥接流量捕获已关闭。" })
     end
 end
