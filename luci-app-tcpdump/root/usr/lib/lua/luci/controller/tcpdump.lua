@@ -1,437 +1,1086 @@
-local M = {}
+<%+header%>
 
--- 确保与旧系统兼容，通过全局module方法声明模块（如果可用）
-if module then
-    module("luci.controller.tcpdump", package.seeall)
-end
+<!-- 页面样式 -->
+<style type="text/css">
+/* 状态指示器样式 */
+.status-indicator-general {
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-weight: bold;
+}
 
--- 常用库的一次性导入
-local http = require "luci.http"
-local util = require "luci.util"
-local nixio = require "nixio"
+/* 确保信息元素不被挤压 */
+#interface-info, #file-size-info {
+    white-space: nowrap;
+    margin-left: 10px;
+    padding: 3px 8px;
+    background-color: #f5f5f5;
+    border-radius: 3px;
+    border: 1px solid #e0e0e0;
+}
 
--- 常量定义
-local CAPTURE_FILE = "/tmp/tcpdump.pcap"
-local MAX_CAPTURE_SIZE = 50 * 1024 * 1024 -- 50MB的文件大小限制
-local MAX_CAPTURE_DURATION = 3600 -- 最大捕获时长，1小时
+/* 端口选择按钮样式 */
+.filter-preset-btn, .filter-preset-group-btn {
+    /* 未选中状态 - 浅色 */
+    background-color: #1014f359;
+    color: #666666;
+    border: 1px solid #d0d0d0;
+    transition: all 0.2s ease;
+    padding: 8px 12px;
+    border-radius: 4px;
+}
 
-function M.index()
-    entry({"admin", "services", "tcpdump"}, firstchild(), _("TCPDump"), 60).dependent = false
-    entry({"admin", "services", "tcpdump", "overview"}, template("tcpdump/overview"), _("Overview"), 1)
-    entry({"admin", "services", "tcpdump", "interfaces"}, call("action_interfaces"))
-    entry({"admin", "services", "tcpdump", "ajax_status"}, call("action_ajax_status"))
-    entry({"admin", "services", "tcpdump", "start"}, call("action_start"))
-    entry({"admin", "services", "tcpdump", "stop"}, call("action_stop"))
-    entry({"admin", "services", "tcpdump", "download"}, call("action_download"))
-    entry({"admin", "services", "tcpdump", "delete"}, call("action_delete"))
-end
+.filter-preset-btn.active, .filter-preset-group-btn.active,
+.filter-preset-btn.cbi-button-highlight, .filter-preset-group-btn.cbi-button-highlight {
+    /* 选中状态 - 深色 */
+    background-color: #080ce2c4;
+    color: #ffffff;
+    border: 1px solid #d0d0d0;
+    box-shadow: 0 3px 6px rgba(0,0,0,0.15);
+    font-weight: bold;
+}
 
--- 获取网络接口列表
-function M.action_interfaces()
-    local interfaces = {}
-    local list = util.exec("ls /sys/class/net/ 2>/dev/null")
-
-    if list and list ~= "" then
-        -- 使用正确的gmatch按空格分割获取接口列表
-        for iface in list:gmatch("[^%s]+") do
-            iface = iface:match("^%s*(.-)%s*$")
-            if iface ~= "" and iface ~= "lo" then
-                table.insert(interfaces, iface)
-            end
-        end
-    end
-
-    -- 如果获取接口失败，提供默认接口列表
-    if #interfaces == 0 then
-        interfaces = {"br-lan", "eth0", "eth1", "wlan0", "wlan1"}
-    end
-
-    table.sort(interfaces)
-
-    http.prepare_content("application/json")
-    http.write_json(interfaces)
-end
-
--- 检查命令是否存在
-local function command_exists(cmd)
-    return util.exec("command -v " .. cmd .. " >/dev/null 2>&1 && echo 1 || echo 0"):match("^1")
-end
-
--- 辅助函数：格式化文件大小
-local function format_file_size(bytes)
-    if not bytes or bytes == 0 then
-        return "0 B"
-    end
-    local sizes = {"B", "KB", "MB", "GB"}
-    local i = 1
-    local size = bytes
-    while size > 1024 and i < #sizes do
-        size = size / 1024
-        i = i + 1
-    end
-    return string.format("%.2f %s", size, sizes[i])
-end
-
--- 内部辅助函数：获取 tcpdump 进程的 PID
-local function get_tcpdump_pids_for_our_capture()
-    local pids = {}
+/* 响应式调整 */
+@media (max-width: 768px) {
+    #status-text {
+        display: block;
+        margin-bottom: 5px;
+    }
     
-    -- 方法1: 使用ps命令获取PID (最精确)
-    local ps_output = util.exec("ps w | grep '[t]cpdump ' | grep -- '-w " .. CAPTURE_FILE .. "' | grep -v 'grep' | awk '{print $1}'")
-    if ps_output and ps_output ~= "" then
-        for pid in ps_output:gmatch("%d+") do
-            table.insert(pids, tonumber(pid))
-        end
-    end
-    
-    -- 方法2: 如果第一种方式失败，尝试其他方式
-    if #pids == 0 then
-        local ps_cmd = "ps w | grep tcpdump | grep -v grep | grep '" .. CAPTURE_FILE .. "'"
-        local ps_output = util.exec(ps_cmd)
-        if ps_output and ps_output ~= "" then
-            -- 使用简单的空格分割并提取PID
-            local pid = ps_output:match("^%s*(%d+)")
-            if pid then
-                table.insert(pids, tonumber(pid))
-            end
-        end
-    end
-    
-    -- 方法3: 最后尝试直接从/proc目录查找 (最可靠)
-    if #pids == 0 and command_exists("ls") then
-        local proc_output = util.exec("ls -d /proc/[0-9]* 2>/dev/null")
-        if proc_output and proc_output ~= "" then
-            for pid_dir in proc_output:gmatch("/proc/(%d+)") do
-                local pid = tonumber(pid_dir)
-                if pid then
-                    -- 尝试读取cmdline文件
-                    local cmdline = util.exec("cat /proc/" .. pid .. "/cmdline 2>/dev/null | tr '\\0' ' '")
-                    if cmdline and cmdline:match("tcpdump") and cmdline:match(CAPTURE_FILE:gsub("/", "%/%")) then
-                        table.insert(pids, pid)
-                    end
-                end
-            end
-        end
-    end
-    
-    return pids
-end
+    #interface-info, #file-size-info {
+        margin-left: 0;
+        margin-right: 5px;
+        margin-bottom: 5px;
+    }
+}
+</style>
 
--- 内部停止函数（仅停止 tcpdump 进程）
-local function action_stop_internal()
-    -- 尝试使用 killall 停止所有名为 tcpdump 的进程
-    if command_exists("killall") then
-        util.exec("killall tcpdump 2>/dev/null")
-    end
-    
-    util.exec("sleep 1") -- 增加初始等待时间
-    
-    -- 添加重试机制，最多尝试3次
-    local max_retries = 3
-    
-    for attempt = 1, max_retries do
-        -- 更精确地找到并停止捕获到指定文件的 tcpdump 进程
-        local pids_to_kill = get_tcpdump_pids_for_our_capture()
+<div class="cbi-map">
+	<h2 name="content"><%:TCPDump 数据包捕获%></h2>
+	<div class="cbi-map-descr">
+		<%:简单的 tcpdump 数据包捕获网页界面。%><br>
+		<%:捕获文件保存在 /tmp/tcpdump.pcap。%>
+	</div>
+
+	<fieldset class="cbi-section">
+		<legend><%:捕获设置%></legend>
+		
+		<div class="cbi-value">
+			<label class="cbi-value-title"><%:网络接口%></label>
+			<div class="cbi-value-field">
+				<div style="display: flex; align-items: center; gap: 10px;"> <!-- 使用Flexbox保持水平排列 -->
+					<select id="interface" class="cbi-input-select" style="flex-grow: 1;">
+						<option value=""><%:正在加载接口...%></option>
+					</select>
+					<button id="btn-refresh" class="cbi-button" onclick="refreshInterfaces()">
+						<%:刷新接口%>
+					</button>
+				</div>
+			</div>
+		</div>
+
+		<div class="cbi-value">
+			<label class="cbi-value-title"><%:网络数据过滤器%></label>
+			<div class="cbi-value-field">
+				<div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+					<input type="text" id="filter" class="cbi-input-text" style="flex-grow: 1;"
+						   placeholder="输入 BPF 过滤器，例如: port 80 or port 443" />
+					<button type="button" class="cbi-button" onclick="showAdvancedFilterDialog()">
+						<%:高级过滤器%>
+					</button>
+				</div>
+				
+				<div class="cbi-value-description"><%:快速选择端口:%></div>
+				<div style="display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; margin-bottom: 10px;">
+					<!-- 组合端口选择按钮 -->
+					<button type="button" class="cbi-button cbi-button-action filter-preset-group-btn" data-group="web">Web (HTTP/S)</button>
+					<button type="button" class="cbi-button cbi-button-action filter-preset-group-btn" data-group="dhcp">DHCP (S/C)</button>
+					<button type="button" class="cbi-button cbi-button-action filter-preset-group-btn" data-group="dns">DNS</button>
+					<!-- 如果需要，可以保留或添加其他独立的常用端口 -->
+					<button type="button" class="cbi-button cbi-button-action filter-preset-btn" data-port="22">SSH</button>
+					<button type="button" class="cbi-button cbi-button-action filter-preset-btn" data-port="123">NTP</button>
+				</div>
+				
+				<div class="cbi-value-description">
+					<%:使用 BPF 语法，支持多个端口: port 80 or port 443。%><br>
+					<%:留空捕获所有流量。%>
+				</div>
+			</div>
+		</div>
+
+		<div class="cbi-value">
+			<label class="cbi-value-title"><%:包数量限制%></label>
+			<div class="cbi-value-field">
+				<input type="number" id="count" class="cbi-input-text" placeholder="1000" min="1" max="100000" />
+				<div class="cbi-value-description">
+					<%:捕获指定数量的包后自动停止，留空表示无限制%>
+				</div>
+			</div>
+		</div>
+	</fieldset>
+
+	<fieldset class="cbi-section">
+		<legend><%:状态与控制%></legend>
+		
+		<div class="cbi-value">
+			<label class="cbi-value-title"><%:状态%></label>
+			<div class="cbi-value-field">
+				<div style="display: flex; align-items: center; flex-wrap: wrap;"> <!-- flex-wrap 以防内容过多挤压 -->
+					<span id="status-text" class="cbi-value-description status-indicator-general">
+						<%:加载中...%>
+					</span>
+					<span id="interface-info" class="cbi-value-description" style="display: none; margin-left: 10px;"></span>
+					<span id="file-size-info" class="cbi-value-description" style="display: none; margin-left: 10px;"></span> 
+                    <!-- 新增文件大小显示元素 -->
+				</div>
+			</div>
+		</div>
+
+		<div class="cbi-value cbi-value-last">
+			<label class="cbi-value-title"><%:操作%></label>
+			<div class="cbi-value-field">
+				<div class="cbi-button-group"> <!-- 使用cbi-button-group可能提供更好的样式 -->
+					<button id="btn-start" class="cbi-button cbi-button-apply" onclick="startCapture()">
+						<%:开始捕获%>
+					</button>
+					<button id="btn-stop" class="cbi-button cbi-button-reset" onclick="stopCapture()" disabled>
+						<%:停止捕获%>
+					</button>
+					<button id="btn-download" class="cbi-button cbi-button-action" onclick="downloadCapture()" disabled>
+						<%:下载文件%>
+					</button>
+					<button id="btn-delete" class="cbi-button cbi-button-negative" onclick="deleteCapture()" disabled>
+						<%:删除文件%>
+					</button>
+				</div>
+			</div>
+		</div>
+	</fieldset>
+
+	<fieldset class="cbi-section">
+		<legend><%:使用提示%></legend>
+		<div class="cbi-section-descr">
+			<ul class="cbi-value-description"> <!-- 调整为使用cbi-value-description包装列表 -->
+				<li><%:快捷键: Ctrl+Enter 开始捕获, Ctrl+Esc 停止捕获%></li>
+				<li><%:点击端口按钮快速添加过滤器%></li>
+				<li><%:文件保存在 /tmp/tcpdump.pcap，重启后会丢失%></li>
+				<li><%:使用 Wireshark 或 tcpdump 命令分析下载的 .pcap 文件%></li>
+			</ul>
+		</div>
+	</fieldset>
+</div>
+
+<script type="text/javascript">
+//<![CDATA[
+
+// ------------------------------------------------
+// 全局状态和配置
+// ------------------------------------------------
+var tcpdumpState = {
+    isUpdating: false,
+    lastUpdate: 0,
+    updateInterval: 3000
+};
+
+// ------------------------------------------------
+// 工具函数
+// ------------------------------------------------
+function formatFileSize(bytes) {
+    if (bytes === 0 || !bytes) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+// ------------------------------------------------
+// 页面状态显示系统
+// ------------------------------------------------
+function showNotification(message, type) {
+    var statusArea = document.getElementById('status-message-area');
+    if (!statusArea) {
+        // 如果状态区域不存在，创建一个
+        statusArea = document.createElement('div');
+        statusArea.id = 'status-message-area';
+        statusArea.className = 'cbi-section';
+        statusArea.style.cssText = `
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 4px;
+            transition: background-color 0.3s ease;
+        `;
         
-        if #pids_to_kill == 0 then
-            break -- 所有进程已终止，退出循环
-        end
-        
-        local pids_str = table.concat(pids_to_kill, " ")
-        
-        if attempt == 1 then
-            -- 第一次尝试使用正常终止信号
-            util.exec("kill " .. pids_str .. " 2>/dev/null")
-            util.exec("sleep 2") -- 增加等待时间确保进程有足够时间终止
-        else
-            -- 后续尝试使用强制终止信号
-            util.exec("kill -9 " .. pids_str .. " 2>/dev/null")
-            util.exec("sleep 2") -- 增加SIGKILL后的等待时间
-        end
-    end
+        var mainContent = document.querySelector('.cbi-map');
+        if (mainContent) {
+            mainContent.insertBefore(statusArea, mainContent.firstChild);
+        }
+    }
     
-    -- 最后再次检查进程状态
-    local remaining_pids = get_tcpdump_pids_for_our_capture()
-    if #remaining_pids > 0 then
-        -- 记录仍然运行的进程
-        local remaining_pids_str = table.concat(remaining_pids, ", ")
-        util.exec("echo 'Failed to stop tcpdump processes: " .. remaining_pids_str .. "' >> /tmp/tcpdump_stop_errors.log 2>&1")
-    end
-end
+    // 设置状态区域样式和内容
+    statusArea.className = 'cbi-section ' + 
+        (type === 'error' ? 'cbi-section-error' : type === 'success' ? 'cbi-section-success' : 'cbi-section-info');
+    
+    statusArea.innerHTML = '<p class="cbi-value-title">' + 
+        (type === 'error' ? '<%:错误%>' : type === 'success' ? '<%:成功%>' : '<%:信息%>') + 
+        '</p><p class="cbi-value-description">' + message + '</p>';
+    
+    // 5秒后自动清除消息（如果没有新消息）
+    clearTimeout(window.statusMessageTimeout);
+    window.statusMessageTimeout = setTimeout(function() {
+        statusArea.innerHTML = '';
+    }, 5000);
+}
 
--- 清理抓包文件
-local function cleanup_capture_files()
-    util.exec("rm -f " .. CAPTURE_FILE .. "* 2>/dev/null")
-end
+// ------------------------------------------------
+// 端口选择器逻辑 (大幅修改以支持组合按钮)
+// ------------------------------------------------
+function setupPortSelector() {
+    var filterInput = document.getElementById('filter');
+    
+    // 定义端口组及其对应的端口
+    var portGroups = {
+        'web': ['80', '443'],
+        'dhcp': ['67', '68'],
+        'dns': ['53']
+    };
 
--- 检查抓包状态
-function M.action_ajax_status()
-    local result = {
-        running = false,
-        file_exists = false,
-        file_size = 0,
-        file_size_human = "0 B",
-        pid = nil,
-        interface = nil
+    // 获取所有独立端口按钮 (如 SSH, NTP)
+    var singlePortButtons = document.querySelectorAll('.filter-preset-btn');
+    // 获取所有组合端口按钮
+    var groupPortButtons = document.querySelectorAll('.filter-preset-group-btn');
+    
+    var currentFilterPorts = new Set();
+
+    function parseFilterInput() {
+        currentFilterPorts.clear();
+        var filterValue = filterInput.value.trim();
+        if (filterValue) {
+            var matches = filterValue.matchAll(/port\s+(\d+)\b/g); 
+            for (const match of matches) {
+                currentFilterPorts.add(match[1]);
+            }
+        }
     }
 
-    local status, err = pcall(function()
-        -- 检查进程
-        local ps_output = util.exec("ps w | grep '[t]cpdump ' | grep -- '-w " .. CAPTURE_FILE .. "' | head -1")
-        if ps_output and ps_output ~= "" then
-            local pid = ps_output:match("^%s*(%d+)")
-            if pid then
-                result.running = true
-                result.pid = pid
-                local interface = ps_output:match("-i%s+(%S+)")
-                if interface then
-                    result.interface = interface
-                end
-            end
-        end
-
-        -- 检查主抓包文件
-        local stat = nixio.fs.stat(CAPTURE_FILE)
-        if stat then
-            result.file_exists = true
-            result.file_size = stat.size
-            result.file_size_human = format_file_size(stat.size)
-        end
-    end)
-
-    if not status then
-        result.error = tostring(err)
-        util.exec("logger -t tcpdump_luci 'Status check error: " .. tostring(err) .. "'")
-    end
-
-    http.prepare_content("application/json")
-    http.write_json(result)
-end
-
--- 过滤器验证（增强版）
-local function validate_filter(filter)
-    if not filter or filter == "" then
-        return true
-    end
-    
-    -- 安全的过滤器验证，不允许 shell 注入
-    if filter:match("[;&|$`\\t\\n\\r]") then
-        return false
-    end
-    
-    -- 更严格的过滤器字符验证，只允许tcpdump合法的过滤表达式字符
-    if not filter:match("^[A-Za-z0-9%s%(%%)=%<%>:_.,%-/%*]+$") then
-        return false
-    end
-    
-    -- 检查是否有未闭合的括号
-    local open_brackets = select(2, filter:gsub("%(", ""))
-    local close_brackets = select(2, filter:gsub("%)", ""))
-    if open_brackets ~= close_brackets then
-        return false
-    end
-    
-    return true
-end
-
--- 启动抓包
-function M.action_start()
-    local interface = http.formvalue("interface")
-    local filter = http.formvalue("filter") or ""
-    local count = http.formvalue("count") or ""
-    local duration = http.formvalue("duration") or "" -- 新增：捕获时长限制
-
-    -- 输入验证
-    if not interface or interface == "" then
-        http.prepare_content("application/json")
-        http.write_json({success = false, message = "Please select network interface"})
-        return
-    end
-
-    if not interface:match("^[A-Za-z0-9%-_%%.]+") then
-        http.prepare_content("application/json")
-        http.write_json({success = false, message = "Invalid interface name"})
-        return
-    end
-
-    if not nixio.fs.stat("/sys/class/net/" .. interface) then
-        http.prepare_content("application/json")
-        http.write_json({success = false, message = "Network interface does not exist"})
-        return
-    end
-
-    if not validate_filter(filter) then
-        http.prepare_content("application/json")
-        http.write_json({success = false, message = "Invalid filter format, avoid special characters"})
-        return
-    end
-
-    -- 验证tcpdump是否安装
-    if not command_exists("tcpdump") then
-        http.prepare_content("application/json")
-        http.write_json({success = false, message = "tcpdump is not installed"})
-        return
-    end
-
-    -- 停止现有进程并清理文件
-    local stop_ok, stop_err = pcall(action_stop_internal)
-    if not stop_ok then
-        util.exec("logger -t tcpdump_luci 'Failed to stop existing processes: " .. tostring(stop_err) .. "'")
-    end
-    
-    local clean_ok, clean_err = pcall(cleanup_capture_files)
-    if not clean_ok then
-        util.exec("logger -t tcpdump_luci 'Failed to clean capture files: " .. tostring(clean_err) .. "'")
-    end
-
-    -- 构建 tcpdump 命令
-    local cmd_parts = {
-        "tcpdump",
-        "-i", interface,
-        "-w", CAPTURE_FILE,
-        "-U", -- 实时写入
-        "-C", tostring(MAX_CAPTURE_SIZE / 1024 / 1024) -- 文件大小限制 (MB)
+    function updateFilterInput() {
+        var portsArray = Array.from(currentFilterPorts);
+        if (portsArray.length > 0) {
+            portsArray.sort((a,b) => parseInt(a) - parseInt(b));
+            filterInput.value = 'port ' + portsArray.join(' or port ');
+        } else {
+            filterInput.value = '';
+        }
+        filterInput.dispatchEvent(new Event('input', { bubbles: true }));
     }
 
-    local message_parts = {}
+    function updatePresetButtons() {
+        parseFilterInput();
+        
+        singlePortButtons.forEach(function(button) {
+            var port = button.dataset.port;
+            if (currentFilterPorts.has(port)) {
+                button.classList.add('active', 'cbi-button-highlight');
+            } else {
+                button.classList.remove('active', 'cbi-button-highlight');
+            }
+        });
 
-    -- 包数量限制
-    if count ~= "" and count:match("^%d+$") then
-        local count_num = tonumber(count)
-        if count_num and count_num > 0 then
-            table.insert(cmd_parts, "-c")
-            table.insert(cmd_parts, tostring(count_num))
-            table.insert(message_parts, "Stop after " .. count .. " packets")
-        end
-    end
+        groupPortButtons.forEach(function(button) {
+            var groupKey = button.dataset.group;
+            var portsInGroup = portGroups[groupKey];
+            
+            var allPortsInGroupSelected = portsInGroup.every(p => currentFilterPorts.has(p));
 
-    -- 捕获时长限制
-    if duration ~= "" and duration:match("^%d+$") then
-        local duration_num = tonumber(duration)
-        if duration_num and duration_num > 0 and duration_num <= MAX_CAPTURE_DURATION then
-            table.insert(message_parts, "Stop after " .. duration .. " seconds")
-            -- 将在命令中使用timeout包装
-            cmd_parts = {"timeout", tostring(duration_num)} .. cmd_parts
-        end
-    end
+            if (allPortsInGroupSelected) {
+                button.classList.add('active', 'cbi-button-highlight');
+            } else {
+                button.classList.remove('active', 'cbi-button-highlight');
+            }
+        });
+    }
 
-    if filter ~= "" then
-        table.insert(cmd_parts, filter)
-    end
+    singlePortButtons.forEach(function(button) {
+        button.addEventListener('click', function() {
+            var port = this.dataset.port;
+            if (currentFilterPorts.has(port)) {
+                currentFilterPorts.delete(port);
+            } else {
+                currentFilterPorts.add(port);
+            }
+            updateFilterInput();
+            updatePresetButtons();
+        });
+    });
 
-    -- 启动 tcpdump（使用更安全的方式）
-    local cmd = table.concat(cmd_parts, " ") .. " 2>/var/log/tcpdump_luci.log &"
-    local success = os.execute(cmd)
+    groupPortButtons.forEach(function(button) {
+        button.addEventListener('click', function() {
+            var groupKey = this.dataset.group;
+            var portsInGroup = portGroups[groupKey];
+            
+            var allPortsSelected = portsInGroup.every(p => currentFilterPorts.has(p));
+            
+            if (allPortsSelected) {
+                portsInGroup.forEach(p => currentFilterPorts.delete(p));
+            } else {
+                portsInGroup.forEach(p => currentFilterPorts.delete(p));
+                portsInGroup.forEach(p => currentFilterPorts.add(p));
+            }
+            updateFilterInput();
+            updatePresetButtons();
+        });
+    });
 
-    util.exec("sleep 1")
+    filterInput.addEventListener('input', updatePresetButtons);
+    
+    updatePresetButtons();
 
-    -- 检查是否启动成功
-    local pids_after_start = get_tcpdump_pids_for_our_capture()
-    success = (#pids_after_start > 0)
+    filterInput.addEventListener('focus', function() {
+        this.select();
+    });
+}
+// ------------------------------------------------
+// 高级过滤器构建器 (优化版)
+// ------------------------------------------------
+function showAdvancedFilterDialog() {
+    var filterInput = document.getElementById('filter');
+    
+    // 解析当前过滤器值以预填充高级过滤表单
+    function parseCurrentFilter() {
+        var currentFilter = filterInput.value.trim();
+        var result = { host: '', protocol: '', port: '', network: '' };
+        
+        if (!currentFilter) return result;
+        
+        // 简单解析当前过滤器值（实际实现可能需要更复杂的解析逻辑）
+        if (currentFilter.match(/\bhost\s+([^\s]+)/i)) {
+            result.host = currentFilter.match(/\bhost\s+([^\s]+)/i)[1];
+        }
+        
+        ['tcp', 'udp', 'icmp', 'arp'].forEach(protocol => {
+            if (currentFilter.match(new RegExp(`\\b${protocol}\\b`, 'i'))) {
+                result.protocol = protocol;
+            }
+        });
+        
+        if (currentFilter.match(/\bportrange\s+([^\s]+)/i)) {
+            result.port = currentFilter.match(/\bportrange\s+([^\s]+)/i)[1];
+        } else if (currentFilter.match(/\bport\s+([^\s,]+)/i)) {
+            // 提取单个或多个端口
+            var ports = currentFilter.match(/\bport\s+([^\s,]+)/ig) || [];
+            ports = ports.map(p => p.replace(/^port\s+/i, ''));
+            result.port = ports.join(', ');
+        }
+        
+        if (currentFilter.match(/\bnet\s+([^\s]+)/i)) {
+            result.network = currentFilter.match(/\bnet\s+([^\s]+)/i)[1];
+        }
+        
+        return result;
+    }
+    
+    var currentFilterValues = parseCurrentFilter();
+    
+    // 创建或获取高级过滤器区域
+    var filterArea = document.getElementById('advanced-filter-area');
+    if (!filterArea) {
+        filterArea = document.createElement('div');
+        filterArea.id = 'advanced-filter-area';
+        filterArea.className = 'cbi-section';
+        
+        var mainContent = document.querySelector('.cbi-map');
+        if (mainContent) {
+            // 将高级过滤器区域插入到适当位置
+            var statusSection = document.querySelector('fieldset.cbi-section:has(legend)');
+            if (statusSection) {
+                mainContent.insertBefore(filterArea, statusSection.nextSibling);
+            } else {
+                mainContent.appendChild(filterArea);
+            }
+        }
+    }
+    
+    // 确保区域可见
+    filterArea.style.display = 'block';
+    
+    var dialogHtml = `
+<div style="background: white; padding: 24px; border-radius: 8px; width: 100%; box-sizing: border-box;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 10px;">
+                    <h3 style="margin: 0; color: #333;"><%:高级过滤器构建器%></h3>
+                    <button type="button" class="cbi-button" style="padding: 5px 10px;" onclick="closeAdvancedFilter()">
+                        &times;
+                    </button>
+                </div>
+                
+                <!-- 过滤条件预览区域 -->
+                <div style="background-color: #f5f5f5; border-radius: 4px; padding: 12px; margin-bottom: 20px; font-family: monospace;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                        <strong style="color: #555;"><%:当前过滤器:%></strong>
+                        <button type="button" id="btn-clear-filter" class="cbi-button" style="padding: 2px 8px; font-size: 0.9em;">
+                            <%:清除%>
+                        </button>
+                    </div>
+                    <div id="filter-preview" style="color: #333; min-height: 20px; word-break: break-all;">
+                        ${currentFilterValues.host || currentFilterValues.protocol || currentFilterValues.port || currentFilterValues.network 
+                            ? filterInput.value : '<%:无过滤条件%>'}
+                    </div>
+                </div>
+                
+                <!-- 输入字段区域 -->
+                <div style="display: grid; grid-template-columns: 1fr; gap: 16px;">
+                    <div class="cbi-value" style="margin-bottom: 0;">
+                        <label class="cbi-value-title" style="margin-bottom: 6px; display: inline-block;"><%:主机/IP地址:%></label>
+                        <div class="cbi-value-field">
+                            <input type="text" id="adv-host" class="cbi-input-text" style="width: 100%; padding: 8px; border-radius: 4px;" 
+                                placeholder="例如: 192.168.1.1 或 example.com" value="${currentFilterValues.host || ''}">
+                            <div style="font-size: 0.9em; color: #666; margin-top: 4px;"><%:指定要过滤的主机或域名%></div>
+                        </div>
+                    </div>
+                    
+                    <div class="cbi-value" style="margin-bottom: 0;">
+                        <label class="cbi-value-title" style="margin-bottom: 6px; display: inline-block;"><%:协议:%></label>
+                        <div class="cbi-value-field">
+                            <select id="adv-protocol" class="cbi-input-select" style="width: 100%; padding: 8px; border-radius: 4px;">
+                                <option value=""><%:所有协议%></option>
+                                <option value="tcp" ${currentFilterValues.protocol === 'tcp' ? 'selected' : ''}>TCP</option>
+                                <option value="udp" ${currentFilterValues.protocol === 'udp' ? 'selected' : ''}>UDP</option>
+                                <option value="icmp" ${currentFilterValues.protocol === 'icmp' ? 'selected' : ''}>ICMP</option>
+                                <option value="arp" ${currentFilterValues.protocol === 'arp' ? 'selected' : ''}>ARP</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="cbi-value" style="margin-bottom: 0;">
+                        <label class="cbi-value-title" style="margin-bottom: 6px; display: inline-block;"><%:端口:%></label>
+                        <div class="cbi-value-field">
+                            <input type="text" id="adv-port" class="cbi-input-text" style="width: 100%; padding: 8px; border-radius: 4px;" 
+                                placeholder="例如: 80, 443 或 1-1024" value="${currentFilterValues.port || ''}">
+                            <div style="font-size: 0.9em; color: #666; margin-top: 4px;"><%:使用逗号分隔多个端口，或使用连字符指定端口范围%></div>
+                        </div>
+                    </div>
+                    
+                    <div class="cbi-value" style="margin-bottom: 0;">
+                        <label class="cbi-value-title" style="margin-bottom: 6px; display: inline-block;"><%:网络段:%></label>
+                        <div class="cbi-value-field">
+                            <input type="text" id="adv-network" class="cbi-input-text" style="width: 100%; padding: 8px; border-radius: 4px;" 
+                                placeholder="例如: 192.168.1.0/24" value="${currentFilterValues.network || ''}">
+                            <div style="font-size: 0.9em; color: #666; margin-top: 4px;"><%:使用CIDR表示法指定网络范围%></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 按钮区域 -->
+                <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; padding-top: 16px; border-top: 1px solid #eee;">
+                    <button type="button" class="cbi-button" onclick="closeAdvancedFilter()"><%:取消%></button>
+                    <button type="button" class="cbi-button" id="btn-reset-filter" style="margin-right: auto;"><%:重置%></button>
+                    <button type="button" class="cbi-button cbi-button-apply" onclick="applyAdvancedFilter()"><%:应用%></button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // 将内容设置到页面中的高级过滤器区域
+    filterArea.innerHTML = dialogHtml;
+    
+    // 更新过滤器预览
+    function updateFilterPreview() {
+        var host = document.getElementById('adv-host').value;
+        var protocol = document.getElementById('adv-protocol').value;
+        var port = document.getElementById('adv-port').value;
+        var network = document.getElementById('adv-network').value;
+        
+        var filterParts = [];
+        
+        if (host) {
+            filterParts.push('host ' + host);
+        }
+        
+        if (protocol) {
+            filterParts.push(protocol);
+        }
+        
+        if (port) {
+            if (port.includes('-')) {
+                filterParts.push('portrange ' + port);
+            } else if (port.includes(',')) {
+                var ports = port.split(',').map(p => 'port ' + p.trim()).join(' or ');
+                filterParts.push('(' + ports + ')');
+            } else {
+                filterParts.push('port ' + port);
+            }
+        }
+        
+        if (network) {
+            filterParts.push('net ' + network);
+        }
+        
+        var finalFilter = filterParts.join(' and ');
+        document.getElementById('filter-preview').textContent = finalFilter || '<%:无过滤条件%>';
+    }
+    
+    // 添加输入事件监听器以实时更新预览
+    document.getElementById('adv-host').addEventListener('input', updateFilterPreview);
+    document.getElementById('adv-protocol').addEventListener('change', updateFilterPreview);
+    document.getElementById('adv-port').addEventListener('input', updateFilterPreview);
+    document.getElementById('adv-network').addEventListener('input', updateFilterPreview);
+    
+    // 清除所有过滤条件
+    document.getElementById('btn-clear-filter').addEventListener('click', function() {
+        document.getElementById('adv-host').value = '';
+        document.getElementById('adv-protocol').value = '';
+        document.getElementById('adv-port').value = '';
+        document.getElementById('adv-network').value = '';
+        updateFilterPreview();
+    });
+    
+    // 重置按钮功能
+    document.getElementById('btn-reset-filter').addEventListener('click', function() {
+        document.getElementById('adv-host').value = currentFilterValues.host || '';
+        document.getElementById('adv-protocol').value = currentFilterValues.protocol || '';
+        document.getElementById('adv-port').value = currentFilterValues.port || '';
+        document.getElementById('adv-network').value = currentFilterValues.network || '';
+        updateFilterPreview();
+    });
+    
+    // 点击背景关闭弹窗 (修复：使用filterArea而不是未定义的dialog)
+    filterArea.addEventListener('click', function(e) {
+        if (e.target === filterArea) {
+            closeAdvancedFilter();
+        }
+    });
+    
+    // ESC键关闭弹窗
+    document.addEventListener('keydown', function escapeHandler(e) {
+        if (e.key === 'Escape') {
+            closeAdvancedFilter();
+            document.removeEventListener('keydown', escapeHandler);
+        }
+    });
+    
+    // 初始化时更新预览
+    updateFilterPreview();
+}
 
-    http.prepare_content("application/json")
-    if success then
-        local message = "TCPDump started successfully"
-        if #message_parts > 0 then
-            message = message .. " (" .. table.concat(message_parts, "; ") .. ")"
-        else
-            message = message .. " (manual stop required, file size limit: " .. format_file_size(MAX_CAPTURE_SIZE) .. ")"
-        end
-        http.write_json({success = true, message = message, pid = pids_after_start[1]})
-    else
-        http.write_json({
-            success = false,
-            message = "Failed to start TCPDump, please check interface or filter"
-        })
-    end
-end
+// 修复：将closeAdvancedFilter移到全局作用域
+function closeAdvancedFilter() {
+    var filterArea = document.getElementById('advanced-filter-area');
+    if (filterArea) {
+        filterArea.style.display = 'none';
+    }
+}
 
--- 停止抓包
-function M.action_stop()
-    local result = {success = true, message = ""}
+// 修复：将applyAdvancedFilter移到全局作用域
+function applyAdvancedFilter() {
+    var filterInput = document.getElementById('filter');
+    var host = document.getElementById('adv-host').value;
+    var protocol = document.getElementById('adv-protocol').value;
+    var port = document.getElementById('adv-port').value;
+    var network = document.getElementById('adv-network').value;
+    
+    var filterParts = [];
+    
+    if (host) {
+        filterParts.push('host ' + host);
+    }
+    
+    if (protocol) {
+        filterParts.push(protocol);
+    }
+    
+    if (port) {
+        if (port.includes('-')) {
+            filterParts.push('portrange ' + port);
+        } else if (port.includes(',')) {
+            var ports = port.split(',').map(p => 'port ' + p.trim()).join(' or ');
+            filterParts.push('(' + ports + ')');
+        } else {
+            filterParts.push('port ' + port);
+        }
+    }
+    
+    if (network) {
+        filterParts.push('net ' + network);
+    }
+    
+    var finalFilter = filterParts.join(' and ');
+    filterInput.value = finalFilter;
+    filterInput.dispatchEvent(new Event('input', { bubbles: true }));
+    
+    // 在页面状态中显示过滤器应用成功
+    showNotification('<%:过滤器已应用%>', 'success');
+    
+    closeAdvancedFilter();
+}
 
-    -- 只停止进程，不删除文件
-    action_stop_internal()
+// ------------------------------------------------
+// 接口管理
+// ------------------------------------------------
+function loadInterfaces() {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '<%=url("admin/services/tcpdump/interfaces")%>', true);
+    xhr.timeout = 10000;
+    
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            var select = document.getElementById('interface');
+            
+            if (xhr.status === 200) {
+                try {
+                    var interfaces = JSON.parse(xhr.responseText);
+                    
+                    if (!interfaces || interfaces.length === 0) {
+                        select.innerHTML = '<option value=""><%:未找到网络接口%></option>';
+                        return;
+                    }
+                    
+                    select.innerHTML = '';
+                    var brLanExists = interfaces.includes('br-lan');
+                    
+                    interfaces.forEach(function(iface) {
+                        var option = document.createElement('option');
+                        option.value = iface;
+                        
+                        if (iface === 'br-lan') {
+                            option.textContent = 'br-lan (<%:默认%>)';
+                        } else {
+                            option.textContent = iface;
+                        }
+                        
+                        select.appendChild(option);
+                    });
+                    
+                    if (brLanExists) {
+                        select.value = 'br-lan';
+                    } else if (interfaces.length > 0) {
+                        select.value = interfaces[0];
+                    }
+                    
+                } catch(e) {
+                    console.error('<%:加载接口时出错 (JSON解析失败)%>:', e);
+                    select.innerHTML = '<option value=""><%:加载接口失败%></option>';
+                }
+            } else {
+                console.error('<%:加载接口失败，状态码:%>', xhr.status);
+                select.innerHTML = '<option value=""><%:加载接口失败 (HTTP %> ' + xhr.status + ')</option>';
+            }
+        }
+    };
+    
+    xhr.ontimeout = function() {
+        console.error('<%:加载接口请求超时%>');
+    };
+    
+    xhr.send();
+}
 
-    local pids_still_running = get_tcpdump_pids_for_our_capture()
-    if #pids_still_running > 0 then
-        result.success = false
-        result.message = "Failed to stop all tcpdump processes, manual intervention may be required (PID: " .. table.concat(pids_still_running, ", ") .. ")"
-    else
-        result.message = "Capture stopped, file saved for download"
-    end
+// ------------------------------------------------
+// 输入验证
+// ------------------------------------------------
+function validateInputs() {
+    var interfaceVal = document.getElementById('interface');
+    var selectedInterface = interfaceVal.value;
+    
+    var filter = document.getElementById('filter').value;
+    var count = document.getElementById('count').value;
+    
+    var errors = [];
+    
+    if (!selectedInterface || selectedInterface === "") {
+        errors.push('<%:请选择网络接口%>');
+    }
+    
+    if (filter) {
+        var dangerousChars = /[;&|`$\\]/;
+        if (dangerousChars.test(filter)) {
+            errors.push('<%:过滤器中包含不安全的字符%>');
+        }
+    }
+    
+    if (count) {
+        var packetCount = parseInt(count);
+        if (isNaN(packetCount) || packetCount < 1 || packetCount > 100000) {
+            errors.push('<%:包数量必须在 1-100000 之间%>');
+        }
+    }
+    
+    return errors;
+}
 
-    http.prepare_content("application/json")
-    http.write_json(result)
-end
+// ------------------------------------------------
+// 状态管理
+// ------------------------------------------------
+function updateStatus() {
+    if (tcpdumpState.isUpdating) return;
+    
+    var now = Date.now();
+    if (now - tcpdumpState.lastUpdate < 1000) return;
+    
+    tcpdumpState.isUpdating = true;
+    tcpdumpState.lastUpdate = now;
+    
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '<%=url("admin/services/tcpdump/ajax_status")%>', true);
+    
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            tcpdumpState.isUpdating = false;
+            
+            if (xhr.status === 200) {
+                try {
+                    var data = JSON.parse(xhr.responseText);
+                    updateUI(data);
+                } catch(e) {
+                    console.error('<%:更新状态时出错:%>', e);
+                    showStatusError('<%:状态数据解析失败%>');
+                }
+            } else {
+                console.error('<%:状态请求失败，状态码:%>', xhr.status);
+                showStatusError('<%:状态请求失败 (HTTP %> ' + xhr.status + ')');
+            }
+        }
+    };
+    
+    xhr.send();
+}
 
--- 下载抓包文件
-function M.action_download()
-    local stat = nixio.fs.stat(CAPTURE_FILE)
+function showStatusError(message) {
+    // 使用统一的页面状态显示系统
+    showNotification('<%:错误:%> ' + message, 'error');
+}
 
-    if not stat then
-        http.status(404, "Not Found")
-        http.prepare_content("text/plain")
-        http.write("Capture file does not exist")
-        return
-    end
+// ------------------------------------------------
+// UI 更新函数 (新增文件大小显示逻辑)
+// ------------------------------------------------
+function updateUI(data) {
+    var statusEl = document.getElementById('status-text');
+    var interfaceInfoEl = document.getElementById('interface-info');
+    var fileSizeInfoEl = document.getElementById('file-size-info'); // 获取文件大小显示元素
+    var startBtn = document.getElementById('btn-start');
+    var stopBtn = document.getElementById('btn-stop');
+    var downloadBtn = document.getElementById('btn-download');
+    var deleteBtn = document.getElementById('btn-delete');
+    
+    if (!statusEl) return;
+    
+    var isRunning = data.running === true;
+    var fileExists = data.file_exists === true;
+    var fileSize = data.file_size || 0; // 获取文件大小，如果不存在则默认为0
+    
+    // 重置所有信息显示
+    interfaceInfoEl.style.display = 'none';
+    fileSizeInfoEl.style.display = 'none';
+    
+    if (isRunning) {
+        // 设置状态文本 - 在状态栏中显示详细信息
+        statusEl.className = 'cbi-value-description status-indicator-general success';
+        statusEl.textContent = 'TCPDump 启动成功 (请手动停止，文件大小限制: 50.00 MB)';
+        
+        // 同时在右侧显示接口和文件大小信息
+        if (data.interface) {
+            interfaceInfoEl.style.display = 'inline-block';
+            interfaceInfoEl.textContent = '接口: ' + data.interface;
+        }
+        if (fileExists) {
+            fileSizeInfoEl.style.display = 'inline-block';
+            fileSizeInfoEl.textContent = '文件大小: ' + formatFileSize(fileSize);
+        }
+        
+        // 使用统一状态系统显示详细信息
+        var statusMessage = 'TCPDump 启动成功';
+        if (data.interface) {
+            statusMessage += ' - 接口: ' + data.interface;
+        }
+        if (fileExists) {
+            statusMessage += ' - 文件大小: ' + formatFileSize(fileSize);
+        }
+        statusMessage += ' - 请手动停止，文件大小限制: 50.00 MB';
+        
+        // 只在状态变化时显示通知
+        if (window.lastStatus !== statusMessage) {
+            showNotification(statusMessage, 'success');
+            window.lastStatus = statusMessage;
+        }
 
-    if stat.size == 0 then
-        http.status(400, "Bad Request")
-        http.prepare_content("text/plain")
-        http.write("Capture file is empty")
-        return
-    end
+    } else {
+        // 设置状态文本
+        statusEl.className = 'cbi-value-description status-indicator-general';
+        statusEl.textContent = '<%:已停止%>';
+        
+        // 使用统一状态系统显示详细信息
+        var statusMessage = '<%:已停止%>';
+        if (fileExists) {
+            statusMessage += ' - 文件大小: ' + formatFileSize(fileSize);
+        }
+        
+        // 只在状态变化时显示通知
+        if (window.lastStatus !== statusMessage) {
+            showNotification(statusMessage, 'info');
+            window.lastStatus = statusMessage;
+        }
+    }
+    
+    if (startBtn) startBtn.disabled = isRunning;
+    if (stopBtn) stopBtn.disabled = !isRunning;
+    if (downloadBtn) downloadBtn.disabled = !fileExists || isRunning; 
+    if (deleteBtn) deleteBtn.disabled = !fileExists || isRunning;
+}
 
-    -- 添加文件大小限制检查
-    if stat.size > MAX_CAPTURE_SIZE then
-        http.status(413, "Payload Too Large")
-        http.prepare_content("text/plain")
-        http.write("File too large, please capture a smaller packet set")
-        return
-    end
+// ------------------------------------------------
+// 操作函数 - 保持不变
+// ------------------------------------------------
+function startCapture() {
+    var errors = validateInputs();
+    if (errors.length > 0) {
+        showNotification('<%:错误:%> ' + errors.join(', '), 'error');
+        return;
+    }
+    
+    var interface = document.getElementById('interface').value;
+    var filter = document.getElementById('filter').value;
+    var count = document.getElementById('count').value;
+    
+    var startBtn = document.getElementById('btn-start');
+    if (startBtn) {
+        startBtn.disabled = true;
+        startBtn.textContent = '<%:启动中...%>';
+    }
+    
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '<%=url("admin/services/tcpdump/start")%>', true);
+    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+    xhr.timeout = 15000;
+    
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            if (startBtn) {
+                startBtn.disabled = false;
+                startBtn.textContent = '<%:开始捕获%>';
+            }
+            setTimeout(updateStatus, 1000); 
+            
+            if (xhr.status === 200) {
+                try {
+                    var result = JSON.parse(xhr.responseText);
+                    if (result.success) {
+                        showNotification(result.message, 'success');
+                    } else {
+                        showNotification('<%:启动失败:%> ' + (result.message || '<%:未知错误%>'), 'error');
+                    }
+                } catch(e) {
+                    showNotification('<%:响应解析失败%>', 'error');
+                }
+            } else {
+               showNotification('<%:请求失败: HTTP %> ' + xhr.status, 'error');
+            }
+            updateStatus();
+        }
+    };
+    
+    xhr.ontimeout = function() {
+        showNotification('<%:启动请求超时%>', 'error');
+        if (startBtn) {
+            startBtn.disabled = false;
+            startBtn.textContent = '<%:开始捕获%>';
+        }
+    };
+    
+    var params = 'interface=' + encodeURIComponent(interface) + 
+                 '&filter=' + encodeURIComponent(filter) + 
+                 '&count=' + encodeURIComponent(count);
+    xhr.send(params);
+}
 
-    local file = io.open(CAPTURE_FILE, "rb")
-    if file then
-        local content = file:read("*a")
-        file:close()
 
-        http.header('Content-Type', 'application/vnd.tcpdump.pcap')
-        http.header('Content-Disposition', 'attachment; filename="tcpdump_' .. os.date("%Y%m%d_%H%M%S") .. '.pcap"')
-        http.header('Content-Length', tostring(#content))
-        http.write(content)
-    else
-        http.status(500, "Internal Server Error")
-        http.write("Failed to read capture file")
-    end
-end
+function stopCapture() {
+    var stopBtn = document.getElementById('btn-stop');
+    var originalText = stopBtn ? stopBtn.textContent : '';
+    
+    if (stopBtn) {
+        stopBtn.disabled = true;
+        stopBtn.textContent = '<%:停止中...%>';
+    }
+    
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '<%=url("admin/services/tcpdump/stop")%>', true);
+    xhr.timeout = 15000;
+    
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            if (stopBtn) {
+                stopBtn.textContent = originalText;
+            }
+            
+            if (xhr.status === 200) {
+                try {
+                    var result = JSON.parse(xhr.responseText);
+                    if (result.success) {
+                        showNotification(result.message, 'success');
+                        updateStatus(); 
+                        setTimeout(updateStatus, 2000);
+                    } else {
+                        showNotification('<%:停止失败:%> ' + (result.message || '<%:未知错误%>'), 'error');
+                        updateStatus();
+                    }
+                } catch(e) {
+                    showNotification('<%:响应解析失败%>', 'error');
+                    updateStatus();
+                }
+            } else {
+                showNotification('<%:停止请求失败，状态码:%> ' + xhr.status, 'error');
+                updateStatus();
+            }
+        }
+    };
+    
+    xhr.ontimeout = function() {
+        showNotification('<%:停止请求超时，但进程可能仍在停止中%>', 'warning');
+        if (stopBtn) {
+            stopBtn.textContent = originalText;
+        }
+        updateStatus();
+    };
+    
+    xhr.send();
+}
 
--- 删除抓包文件
-function M.action_delete()
-    local result = {success = false, message = "Operation failed"}
+function downloadCapture() {
+    var downloadBtn = document.getElementById('btn-download');
+    if (downloadBtn) downloadBtn.disabled = true;
 
-    -- 先停止所有相关进程
-    local ok, err = pcall(action_stop_internal)
-    if not ok then
-        util.exec("logger -t tcpdump_luci 'Failed to stop processes: " .. tostring(err) .. "'")
-    end
+    window.open('<%=url("admin/services/tcpdump/download")%>', '_blank');
+    
+    setTimeout(function() {
+        updateStatus(); 
+    }, 2000); 
+}
 
-    -- 然后删除文件
-    local ok2, err2 = pcall(cleanup_capture_files)
-    if not ok2 then
-        util.exec("logger -t tcpdump_luci 'Failed to clean files: " .. tostring(err2) .. "'")
-    end
+function deleteCapture() {
+    // 检查是否已经显示了确认通知
+    if (window.deleteConfirmationVisible) {
+        // 如果已经显示了确认通知，则执行删除操作
+        window.deleteConfirmationVisible = false;
+        proceedWithDelete();
+        return;
+    }
+    
+    // 显示删除确认通知
+    showNotification('<%:您确定要删除 /tmp/tcpdump.pcap 文件吗？此操作无法撤销。%>\n\n<button id="confirm-delete" class="cbi-button cbi-button-negative">确认删除</button>', 'warning');
+    
+    // 标记确认通知可见
+    window.deleteConfirmationVisible = true;
+    
+    // 为确认按钮添加事件监听器
+    setTimeout(function() {
+        var confirmBtn = document.getElementById('confirm-delete');
+        if (confirmBtn) {
+            confirmBtn.onclick = function() {
+                window.deleteConfirmationVisible = false;
+                proceedWithDelete();
+            };
+        }
+    }, 100);
+}
 
-    local stat = nixio.fs.stat(CAPTURE_FILE)
-    if not stat then
-        result.success = true
-        result.message = "Capture file deleted"
-    else
-        result.message = "Failed to delete file"
-    end
+// 执行删除操作的函数
+function proceedWithDelete() {
+    var deleteBtn = document.getElementById('btn-delete');
+    if (deleteBtn) {
+        deleteBtn.disabled = true;
+        deleteBtn.textContent = '<%:删除中...%>';
+    }
 
-    http.prepare_content("application/json")
-    http.write_json(result)
-end
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '<%=url("admin/services/tcpdump/delete")%>', true);
+    
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            if (deleteBtn) {
+                deleteBtn.disabled = false;
+                deleteBtn.textContent = '<%:删除文件%>';
+            }
+            setTimeout(updateStatus, 500);
+            
+            if (xhr.status === 200) {
+                try {
+                    var result = JSON.parse(xhr.responseText);
+                    if (result.success) {
+                        showNotification(result.message, 'success');
+                    } else {
+                        showNotification(result.message || '<%:删除失败%>', 'error');
+                    }
+                } catch(e) {
+                    showNotification('<%:删除响应解析失败%>', 'error');
+                }
+            } else {
+                showNotification('<%:删除请求失败:%> ' + xhr.status, 'error');
+            }
+        }
+    };
+    
+    xhr.send();
+}
 
-return M
+function refreshInterfaces() {
+    var refreshBtn = document.getElementById('btn-refresh');
+    var originalText = refreshBtn ? refreshBtn.textContent : '';
+
+    if (refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = '<%:刷新中...%>';
+    }
+    
+    loadInterfaces();
+    
+    setTimeout(function() {
+        if (refreshBtn) {
+            refreshBtn.disabled = false;
+            refreshBtn.textContent = originalText;
+        }
+        updateStatus();
+    }, 1500); 
+}
+
+// ------------------------------------------------
+// 初始化
+// ------------------------------------------------
+document.addEventListener('DOMContentLoaded', function() {
+    setupPortSelector();
+    loadInterfaces();
+    updateStatus();
+    
+    var countInput = document.getElementById('count');
+    if (countInput) {
+        countInput.addEventListener('change', function() {
+            var value = parseInt(this.value);
+            if (isNaN(value) || value < 1) this.value = '';
+            else if (value > 100000) this.value = 100000;
+        });
+    }
+    
+    setInterval(updateStatus, tcpdumpState.updateInterval);
+    
+    document.addEventListener('visibilitychange', function() {
+        if (!document.hidden) {
+            updateStatus();
+        }
+    });
+    
+    document.addEventListener('keydown', function(e) {
+        if (e.ctrlKey || e.metaKey) {
+            switch(e.key) {
+                case 'Enter':
+                    e.preventDefault();
+                    document.getElementById('btn-start').click(); 
+                    break;
+                case 'Escape':
+                    e.preventDefault();
+                    document.getElementById('btn-stop').click();
+                    break;
+            }
+        }
+    });
+});
+
+//]]>
+</script>
+
+<%+footer%>
